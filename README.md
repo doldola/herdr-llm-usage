@@ -12,6 +12,15 @@ switching between them without losing running sessions.
 
 Claude can also switch on its own before an account runs out.
 
+![Claude tab: usage for every saved account](assets/panel-claude.png)
+
+<p>
+  <img src="assets/panel-codex.png" alt="Codex tab" width="49%">
+  <img src="assets/panel-settings.png" alt="Settings tab: auto-switch" width="49%">
+</p>
+
+<sub>Screenshots use example accounts.</sub>
+
 ## Requirements
 
 - `python3` (3.8+, standard library only)
