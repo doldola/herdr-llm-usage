@@ -58,6 +58,8 @@ detection and status changes (provider requests are cached for 2 minutes):
 | `$usage` | `5h 42% ↻2h 13m · week 18% ↻3d 4h` |
 | `$usage_5h` | `42` (percent used, for color rules) |
 | `$usage_week` | `18` |
+| `$usage_5h_reset` | `↻2h55m` |
+| `$usage_week_reset` | `↻5d9h` |
 | `$usage_account` | `me@example.com` |
 
 Add them to the Agent sidebar layout, for example:
@@ -71,13 +73,17 @@ rows = [
 ]
 ```
 
-With herdr 0.9.0 or newer you can color the 5-hour value by how much is used:
+For a narrow sidebar, show one short row per window, with the percentage
+colored by how much is used (herdr 0.9.0 or newer). It renders as `20 · ↻2h55m`
+and `8 · ↻5d9h`; a row disappears when the provider has no such window (Codex
+Pro, for example, has only the weekly one).
 
 ```toml
 [ui.sidebar.agents]
 rows = [
   ["state_icon", "agent", "state_text"],
-  [{ token = "$usage_5h", rules = [{ gt = 90, fg = "#f55", bold = true }, { gt = 70, fg = "#fc0" }] }, "$usage_account"],
+  [{ token = "$usage_5h", fg = "#a6e3a1", bold = true, rules = [{ gt = 90, fg = "#f38ba8" }, { gt = 70, fg = "#f9e2af" }] }, { token = "$usage_5h_reset", dim = true }],
+  [{ token = "$usage_week", fg = "#a6e3a1", bold = true, rules = [{ gt = 90, fg = "#f38ba8" }, { gt = 70, fg = "#f9e2af" }] }, { token = "$usage_week_reset", dim = true }],
   ["workspace", "tab"],
 ]
 ```

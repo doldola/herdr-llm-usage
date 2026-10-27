@@ -440,19 +440,20 @@ def herdr(*args):
 
 def sidebar_tokens(provider):
     windows = provider["windows"]
-    tokens = {"usage": None, "usage_5h": None, "usage_week": None, "usage_account": provider.get("account")}
+    tokens = {"usage": None, "usage_5h": None, "usage_week": None, "usage_5h_reset": None,
+              "usage_week_reset": None, "usage_account": provider.get("account")}
     if provider.get("error") and not windows:
         tokens["usage"] = "usage: " + provider["error"][:60]
         return tokens
     parts = []
     for w in windows:
-        if w["label"] == "5h":
-            tokens["usage_5h"] = "%d" % round(w["used"])
-        elif w["label"] == "week":
-            tokens["usage_week"] = "%d" % round(w["used"])
-        else:
+        if w["label"] not in ("5h", "week"):
             continue
-        reset = until(w.get("resets_at"))
+        key = "usage_" + w["label"]
+        # Sidebars are narrow, so the countdown drops its spaces: "2h55m", "5d9h".
+        reset = until(w.get("resets_at")).replace(" ", "")
+        tokens[key] = "%d" % round(w["used"])
+        tokens[key + "_reset"] = ("↻" + reset) if reset else None
         parts.append("%s %d%%%s" % (w["label"], round(w["used"]), (" ↻" + reset) if reset else ""))
     tokens["usage"] = " · ".join(parts) or None
     return tokens
