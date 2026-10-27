@@ -1,6 +1,6 @@
 id = "llm-usage"
 name = "LLM Usage"
-version = "0.2.0"
+version = "0.3.0"
 min_herdr_version = "0.7.5"
 description = "Show connected LLM accounts and remaining subscription usage (Claude, Codex)"
 platforms = ["linux", "macos"]
@@ -10,6 +10,12 @@ id = "open"
 title = "Show LLM usage"
 contexts = ["workspace"]
 command = ["python3", "llm_usage.py", "open"]
+
+[[actions]]
+id = "pet"
+title = "Show the cat"
+contexts = ["workspace"]
+command = ["python3", "pet.py", "open"]
 
 [[actions]]
 id = "refresh"
@@ -35,3 +41,9 @@ placement = "popup"
 width = 90
 height = "70%"
 command = ["python3", "llm_usage.py", "dashboard"]
+
+[[panes]]
+id = "pet"
+title = "cat"
+placement = "split"
+command = ["python3", "pet.py", "run"]
