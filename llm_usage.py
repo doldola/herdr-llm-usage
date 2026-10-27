@@ -40,6 +40,15 @@ CODEX_USER_AGENT = "codex-cli"
 
 AGENT_PROVIDERS = {"claude": "claude", "codex": "codex", "gemini": "gemini"}
 
+# A little cat on every agent row, by agent status ($pet in the sidebar layout).
+PET_FACES = {
+    "working": "=^o^= ~~",
+    "blocked": "=^O^= !",
+    "done": "=^ω^= ♪",
+    "idle": "=^.^=",
+    "unknown": "=^?^=",
+}
+
 
 class Unavailable(Exception):
     """The provider cannot report usage right now; the message says why."""
@@ -468,28 +477,34 @@ def cmd_sidebar(_args):
         agents = (json.loads(listing.stdout).get("result") or {}).get("agents") or []
     except ValueError:
         return 1
-    wanted = {AGENT_PROVIDERS.get(a.get("agent")) for a in agents} - {None}
-    if not wanted:
+    if not agents:
         return 0
     # A fresh server has no tokens on its panes, and the refresh action asks for new numbers.
     fresh_start = os.environ.get("HERDR_PLUGIN_EVENT") == "startup"
     manual = bool(os.environ.get("HERDR_PLUGIN_ACTION_ID"))
-    data = cached(0 if manual else CACHE_TTL)
+    wanted = {AGENT_PROVIDERS.get(a.get("agent")) for a in agents} - {None}
+    data = cached(0 if manual else CACHE_TTL) if wanted else {"providers": [], "fetched_at": 0}
     by_provider = {p["provider"]: p for p in data["providers"]}
     reported = {} if fresh_start or manual else read_json(state_dir() / "reported.json") or {}
     for agent in agents:
         provider = by_provider.get(AGENT_PROVIDERS.get(agent.get("agent")))
         pane = agent.get("pane_id")
-        if not provider or not pane:
+        if not pane:
             continue
-        tokens = sidebar_tokens(provider)
-        key = json.dumps([tokens, data["fetched_at"]], sort_keys=True)
+        tokens = sidebar_tokens(provider) if provider else {}
+        pet = PET_FACES.get(agent.get("agent_status"), PET_FACES["unknown"])
+        key = json.dumps([tokens, pet, data["fetched_at"]], sort_keys=True)
         if reported.get(pane) == key:
             continue
-        args = ["pane", "report-metadata", pane, "--source", SOURCE, "--ttl-ms", str(TOKEN_TTL_MS)]
-        for name, value in tokens.items():
-            args += ["--token", "%s=%s" % (name, value)] if value else ["--clear-token", name]
-        if herdr(*args).returncode == 0:
+        ok = True
+        if tokens:
+            args = ["pane", "report-metadata", pane, "--source", SOURCE, "--ttl-ms", str(TOKEN_TTL_MS)]
+            for name, value in tokens.items():
+                args += ["--token", "%s=%s" % (name, value)] if value else ["--clear-token", name]
+            ok = herdr(*args).returncode == 0
+        # The cat follows the agent's state, so it stays until the next change instead of expiring.
+        ok = herdr("pane", "report-metadata", pane, "--source", SOURCE, "--token", "pet=" + pet).returncode == 0 and ok
+        if ok:
             reported[pane] = key
     (state_dir() / "reported.json").write_text(json.dumps(reported))
     return 0

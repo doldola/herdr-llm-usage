@@ -90,6 +90,29 @@ rows = [
 
 ## Cat
 
+### In the sidebar
+
+Every agent row (any agent, not only Claude and Codex) gets a `$pet` token
+that follows the agent's state:
+
+| State | `$pet` |
+|---|---|
+| working | `=^o^= ~~` |
+| blocked | `=^O^= !` |
+| done | `=^ω^= ♪` |
+| idle | `=^.^=` |
+| unknown | `=^?^=` |
+
+```toml
+[ui.sidebar.agents]
+rows = [
+  ["state_icon", "agent", "state_text", { token = "$pet", fg = "#f5a962", dim = false, rules = [{ contains = "!", fg = "#f38ba8", bold = true }, { contains = "~", fg = "#f9e2af" }] }],
+  ["workspace", "tab"],
+]
+```
+
+### In a pane
+
 A pixel cat lives in a small pane below your work and reacts to your agents:
 
 | Agents | Cat |
