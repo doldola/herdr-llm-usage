@@ -23,10 +23,12 @@ Requires `python3` (3.8+, standard library only).
 ## Install
 
 ```bash
-herdr plugin install <owner>/herdr-llm-usage
+herdr plugin install doldola/herdr-llm-usage
 # or, from a local checkout
 herdr plugin link /path/to/herdr-llm-usage
 ```
+
+Update a GitHub install with `herdr plugin update`.
 
 ## Dashboard popup
 
