@@ -1,13 +1,13 @@
 id = "llm-usage"
 name = "LLM Usage"
-version = "0.4.1"
+version = "0.5.0"
 min_herdr_version = "0.7.5"
-description = "Show connected LLM accounts and remaining subscription usage (Claude, Codex)"
+description = "LLM accounts and usage in one panel: Claude and Codex usage, account switching, auto-switch"
 platforms = ["linux", "macos"]
 
 [[actions]]
 id = "open"
-title = "Show LLM usage"
+title = "LLM usage and accounts"
 contexts = ["workspace"]
 command = ["python3", "llm_usage.py", "open"]
 
@@ -16,6 +16,12 @@ id = "refresh"
 title = "Refresh LLM usage in sidebar"
 contexts = ["workspace"]
 command = ["python3", "llm_usage.py", "sidebar"]
+
+[[actions]]
+id = "codex-restart"
+title = "Resume Codex panes on the current login"
+contexts = ["workspace"]
+command = ["python3", "llm_usage.py", "codex-restart"]
 
 [[startup]]
 command = ["python3", "llm_usage.py", "sidebar"]
@@ -26,12 +32,12 @@ command = ["python3", "llm_usage.py", "sidebar"]
 
 [[events]]
 on = "pane.agent_status_changed"
-command = ["python3", "llm_usage.py", "sidebar"]
+command = ["python3", "llm_usage.py", "event"]
 
 [[panes]]
 id = "dashboard"
 title = "LLM usage"
 placement = "popup"
-width = 90
-height = "70%"
+width = "85%"
+height = "85%"
 command = ["python3", "llm_usage.py", "dashboard"]

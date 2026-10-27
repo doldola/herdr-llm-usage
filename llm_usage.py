@@ -4,12 +4,16 @@
 Reads the logins that Claude Code and Codex already keep on this machine and
 asks each provider for the current rate-limit windows. Tokens are only read,
 never refreshed or written, so the CLIs stay signed in exactly as they were.
+Switching between saved accounts lives in claude_accounts.py and
+codex_accounts.py, and the dashboard (dashboard.py) drives both.
 
 Commands:
   status [--json]   print every provider once
-  dashboard         full-screen view for a herdr popup pane (r refresh, q quit)
-  sidebar           report usage tokens onto agent panes (herdr event hook)
+  dashboard         tabbed panel for a herdr popup pane (accounts, usage, settings)
   open              open the dashboard popup (herdr action)
+  sidebar           report usage tokens onto agent panes (herdr event hook)
+  event             sidebar plus one Claude auto-switch check (herdr event hook)
+  codex-restart     resume Codex panes on the current login (herdr action)
 """
 
 import base64
@@ -399,38 +403,9 @@ def cmd_status(args):
 
 
 def cmd_dashboard(_args):
-    import select
-    import termios
-    import tty
+    import dashboard
 
-    fd = sys.stdin.fileno()
-    saved = termios.tcgetattr(fd)
-    refresh_every = 60
-    try:
-        tty.setcbreak(fd)
-        sys.stdout.write("\033[?25l")
-        force = True
-        data = None
-        while True:
-            if force or data is None or time.time() - data["fetched_at"] >= refresh_every:
-                sys.stdout.write("\033[H\033[2J\033[2mfetching…\033[0m")
-                sys.stdout.flush()
-                data = cached(0 if force else refresh_every)
-                force = False
-            sys.stdout.write("\033[H\033[2J\033[1mLLM usage\033[0m   \033[2mr refresh · q close\033[0m\n\n")
-            sys.stdout.write(render(data).replace("\n", "\r\n") + "\r\n")
-            sys.stdout.flush()
-            ready, _, _ = select.select([sys.stdin], [], [], 30)
-            if ready:
-                key = os.read(fd, 1)
-                if key in (b"q", b"Q", b"\x1b", b"\x03"):
-                    return 0
-                if key in (b"r", b"R"):
-                    force = True
-    finally:
-        sys.stdout.write("\033[?25h")
-        sys.stdout.flush()
-        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+    return dashboard.run()
 
 
 def herdr(*args):
@@ -459,7 +434,8 @@ def sidebar_tokens(provider):
     return tokens
 
 
-def cmd_sidebar(_args):
+def cmd_sidebar(args):
+    """Report usage tokens; --force refetches and reports even unchanged values."""
     listing = herdr("agent", "list")
     if listing.returncode != 0:
         print(listing.stderr.strip(), file=sys.stderr)
@@ -473,7 +449,7 @@ def cmd_sidebar(_args):
         return 0
     # A fresh server has no tokens on its panes, and the refresh action asks for new numbers.
     fresh_start = os.environ.get("HERDR_PLUGIN_EVENT") == "startup"
-    manual = bool(os.environ.get("HERDR_PLUGIN_ACTION_ID"))
+    manual = os.environ.get("HERDR_PLUGIN_ACTION_ID", "").endswith("refresh") or "--force" in args
     data = cached(0 if manual else CACHE_TTL)
     by_provider = {p["provider"]: p for p in data["providers"]}
     reported = {} if fresh_start or manual else read_json(state_dir() / "reported.json") or {}
@@ -503,8 +479,34 @@ def cmd_open(_args):
     return opened.returncode
 
 
+def cmd_event(args):
+    import claude_accounts
+
+    cmd_sidebar(args)
+    claude_accounts.auto_tick()
+    return 0
+
+
+def cmd_codex_restart(_args):
+    import codex_accounts
+
+    results = codex_accounts.run_restarts()
+    if not results:
+        return 0
+    resumed = [p for p, r in results.items() if r == "resumed"]
+    problems = ["%s: %s" % (p, r) for p, r in results.items() if r not in ("resumed", "closed")]
+    body = "%d pane(s) resumed on the new account." % len(resumed)
+    if problems:
+        body += " " + "; ".join(problems)
+    herdr("notification", "show", "Codex panes restarted" if not problems else "Codex restart needs attention",
+          "--body", body[:300])
+    cmd_sidebar(["--force"])
+    return 0
+
+
 def main(argv):
-    commands = {"status": cmd_status, "dashboard": cmd_dashboard, "sidebar": cmd_sidebar, "open": cmd_open}
+    commands = {"status": cmd_status, "dashboard": cmd_dashboard, "sidebar": cmd_sidebar, "open": cmd_open,
+                "event": cmd_event, "codex-restart": cmd_codex_restart}
     if not argv or argv[0] not in commands:
         print(__doc__.strip())
         return 2
