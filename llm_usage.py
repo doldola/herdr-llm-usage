@@ -256,8 +256,12 @@ def fetch_codex():
             result["windows"] += codex_windows(extra.get("rate_limit"), extra.get("limit_name") or "")
     credits = usage.get("credits")
     if isinstance(credits, dict) and credits.get("has_credits"):
-        result["notes"].append("credits: " + ("unlimited" if credits.get("unlimited")
-                                              else str(credits.get("balance"))))
+        balance = credits.get("balance")
+        try:
+            balance = "{:,.2f}".format(float(balance))
+        except (TypeError, ValueError):
+            pass
+        result["notes"].append("credits: " + ("unlimited" if credits.get("unlimited") else str(balance)))
     return result
 
 
