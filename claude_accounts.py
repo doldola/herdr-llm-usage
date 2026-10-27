@@ -53,6 +53,26 @@ def state_dir():
     return path
 
 
+def note(kind, text):
+    """Remember what a background hook last did, for the Settings tab."""
+    path = state_dir() / "diagnostics.json"
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        data = {}
+    data[kind] = {"at": time.time(), "text": text}
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data))
+    os.replace(tmp, path)
+
+
+def diagnostics():
+    try:
+        return json.loads((state_dir() / "diagnostics.json").read_text())
+    except (OSError, ValueError):
+        return {}
+
+
 # ---------------------------------------------------------------- cswap
 
 
@@ -178,22 +198,29 @@ def pick(rows, values):
     return min(candidates, key=lambda a: max(window_pcts(a, model)))
 
 
-def auto_tick():
+def auto_tick(force=False):
     """One auto-switch check, at most every AUTO_INTERVAL seconds, when enabled."""
     values = settings()
-    if not values["auto_switch"] or not cswap_path():
+    if not values["auto_switch"]:
+        return
+    if not cswap_path():
+        note("auto", "cswap not found on PATH or in ~/.local/bin")
         return
     stamp = state_dir() / "auto.last"
     try:
-        if time.time() - stamp.stat().st_mtime < AUTO_INTERVAL:
+        if not force and time.time() - stamp.stat().st_mtime < AUTO_INTERVAL:
             return
     except OSError:
         pass
     stamp.touch()
-    if values["strategy"] != "soonest-reset":
-        auto_best(values)
-    else:
-        auto_soonest_reset(values)
+    try:
+        if values["strategy"] != "soonest-reset":
+            auto_best(values)
+        else:
+            auto_soonest_reset(values)
+    except Exception as exc:  # a hook has nowhere else to report
+        note("auto", "error: %s: %s" % (type(exc).__name__, exc))
+        raise
 
 
 def auto_best(values):
@@ -203,7 +230,8 @@ def auto_best(values):
         args += ["--model", str(values["model"])]
     try:
         result = cswap(*args)
-    except (RuntimeError, subprocess.SubprocessError):
+    except (RuntimeError, subprocess.SubprocessError) as exc:
+        note("auto", "cswap auto failed: %s" % exc)
         return
     if result.returncode == 0:  # switched
         target = "?"
@@ -212,9 +240,15 @@ def auto_best(values):
                 target = (json.loads(line).get("to") or {}).get("email") or target
             except ValueError:
                 continue
+        note("auto", "switched to " + target)
         notify("Claude auto-switched → " + target, "The previous account reached %s%%." % values["threshold"])
     elif result.returncode == 3:  # every account exhausted
+        note("auto", "every account is at the threshold")
         notify("All Claude accounts are near their limits", "No account has quota left to switch to.")
+    elif result.returncode == 2:
+        note("auto", "no switch needed")
+    else:
+        note("auto", "cswap auto exited %d: %s" % (result.returncode, (result.stderr or result.stdout).strip()[-200:]))
 
 
 def auto_soonest_reset(values):
@@ -226,32 +260,44 @@ def auto_soonest_reset(values):
     """
     stamp = state_dir() / "auto.switched"
     try:
-        if time.time() - stamp.stat().st_mtime < SWITCH_COOLDOWN:
+        left = SWITCH_COOLDOWN - (time.time() - stamp.stat().st_mtime)
+        if left > 0:
+            note("auto", "waiting %d min after the last switch" % (left // 60 + 1))
             return
     except OSError:
         pass
     try:
         rows = accounts()
-    except (RuntimeError, subprocess.SubprocessError):
+    except (RuntimeError, subprocess.SubprocessError) as exc:
+        note("auto", "cswap list failed: %s" % exc)
         return
     active = next((a for a in rows if a.get("active")), None)
-    if not active or active.get("usageStatus") != "ok":
+    if not active:
+        note("auto", "cswap reports no active account")
+        return
+    if active.get("usageStatus") != "ok":
+        note("auto", "holding: active account usage is %s" % active.get("usageStatus"))
         return  # unknown usage: hold, as cswap auto does
     active_full = not usable(active, float(values["threshold"]), values.get("model"))
     target = pick(rows, values)
     if not target:
+        note("auto", "every account is at the threshold" if active_full else "no other usable account")
         if active_full:
             notify("All Claude accounts are near their limits", "No account has quota left to switch to.")
         return
     if target.get("number") == active.get("number"):
+        note("auto", "staying on %s (its weekly quota resets soonest)" % active.get("email"))
         return
     if not active_full and week_reset(target) > week_reset(active) - PREFER_MARGIN:
+        note("auto", "staying on %s (below the threshold)" % active.get("email"))
         return
     try:
         switched, email = switch(target["number"])
     except (RuntimeError, subprocess.SubprocessError) as exc:
+        note("auto", "switch to %s failed: %s" % (target.get("email"), exc))
         notify("Claude auto-switch failed", str(exc))
         return
     if switched:
         stamp.touch()
+        note("auto", "switched to " + email)
         notify("Claude auto-switched → " + email, "Its weekly quota resets soonest.")

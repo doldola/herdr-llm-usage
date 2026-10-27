@@ -101,9 +101,10 @@ def claude_home():
 
 
 def claude_credentials():
-    found = read_json(claude_home() / ".credentials.json")
-    if found is None and sys.platform == "darwin" and shutil.which("security"):
-        # Claude Code keeps its login in the macOS Keychain instead of a file.
+    found = None
+    if sys.platform == "darwin" and shutil.which("security"):
+        # On macOS Claude Code keeps its login in the Keychain; a .credentials.json
+        # there is a leftover (or another tool's fallback) and may hold an old token.
         try:
             raw = subprocess.run(
                 ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
@@ -112,6 +113,8 @@ def claude_credentials():
             found = json.loads(raw) if raw else None
         except (OSError, ValueError, subprocess.SubprocessError):
             found = None
+    if found is None:
+        found = read_json(claude_home() / ".credentials.json")
     return (found or {}).get("claudeAiOauth") or {}
 
 
@@ -438,6 +441,9 @@ def cmd_sidebar(args):
     """Report usage tokens; --force refetches and reports even unchanged values."""
     listing = herdr("agent", "list")
     if listing.returncode != 0:
+        import claude_accounts
+
+        claude_accounts.note("sidebar", "herdr agent list failed: " + listing.stderr.strip()[:160])
         print(listing.stderr.strip(), file=sys.stderr)
         return 1
     try:
@@ -446,6 +452,9 @@ def cmd_sidebar(args):
         return 1
     wanted = {AGENT_PROVIDERS.get(a.get("agent")) for a in agents} - {None}
     if not wanted:
+        import claude_accounts
+
+        claude_accounts.note("sidebar", "no Claude, Codex or Gemini panes to update")
         return 0
     # A fresh server has no tokens on its panes, and the refresh action asks for new numbers.
     fresh_start = os.environ.get("HERDR_PLUGIN_EVENT") == "startup"
@@ -453,6 +462,7 @@ def cmd_sidebar(args):
     data = cached(0 if manual else CACHE_TTL)
     by_provider = {p["provider"]: p for p in data["providers"]}
     reported = {} if fresh_start or manual else read_json(state_dir() / "reported.json") or {}
+    failures = []
     for agent in agents:
         provider = by_provider.get(AGENT_PROVIDERS.get(agent.get("agent")))
         pane = agent.get("pane_id")
@@ -465,9 +475,17 @@ def cmd_sidebar(args):
         args = ["pane", "report-metadata", pane, "--source", SOURCE, "--ttl-ms", str(TOKEN_TTL_MS)]
         for name, value in tokens.items():
             args += ["--token", "%s=%s" % (name, value)] if value else ["--clear-token", name]
-        if herdr(*args).returncode == 0:
+        result = herdr(*args)
+        if result.returncode == 0:
             reported[pane] = key
+        else:
+            failures.append(result.stderr.strip()[:120])
     (state_dir() / "reported.json").write_text(json.dumps(reported))
+    import claude_accounts
+
+    problems = ["%s: %s" % (p["name"], p["error"]) for p in data["providers"] if p.get("error")]
+    problems += ["report-metadata: " + f for f in failures[:1]]
+    claude_accounts.note("sidebar", "; ".join(problems) or "ok, %d agent pane(s)" % len(agents))
     return 0
 
 
@@ -510,7 +528,14 @@ def main(argv):
     if not argv or argv[0] not in commands:
         print(__doc__.strip())
         return 2
-    return commands[argv[0]](argv[1:])
+    try:
+        return commands[argv[0]](argv[1:])
+    except Exception as exc:
+        if argv[0] in ("sidebar", "event", "codex-restart"):  # hooks: leave a trace for the panel
+            import claude_accounts
+
+            claude_accounts.note("error", "%s: %s: %s" % (argv[0], type(exc).__name__, exc))
+        raise
 
 
 if __name__ == "__main__":

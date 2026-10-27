@@ -34,6 +34,17 @@ def bar(used, width=18):
     return color + "█" * filled + DIM + "░" * (width - filled) + RESET
 
 
+def since(epoch):
+    seconds = int(time.time() - epoch)
+    if seconds < 60:
+        return "just now"
+    if seconds < 3600:
+        return "%dm ago" % (seconds // 60)
+    if seconds < 86400:
+        return "%dh %dm ago" % (seconds // 3600, seconds % 3600 // 60)
+    return "%dd ago" % (seconds // 86400)
+
+
 def window_line(label, used, resets_at):
     reset = llm_usage.until(resets_at)
     reset = ("  ↻ " + reset) if reset and reset != "resetting" else ""
@@ -96,7 +107,7 @@ class Panel:
         keys = {
             0: "←→ tabs · ↑↓ select · enter switch · b switch by strategy · s save login · x remove · r refresh · q close",
             1: "←→ tabs · ↑↓ select · enter switch · b most quota · s save login · x remove · r refresh · q close",
-            2: "←→ tabs · ↑↓ select · enter change · +/- threshold · q close",
+            2: "←→ tabs · ↑↓ select · enter change · +/- threshold · c check now · q close",
         }[self.tab]
         out.append(DIM + keys[:width] + RESET)
         sys.stdout.write("\033[H\033[2J" + "\r\n".join(out))
@@ -177,6 +188,17 @@ class Panel:
             lines.append("%s %-22s %s" % (self.pointer(i), label, show(values)))
         if values["auto_switch"] and not claude_accounts.cswap_path():
             lines += ["", RED + "Auto-switch needs claude-swap: uv tool install claude-swap" + RESET]
+        lines += ["", BOLD + "Background activity" + RESET + DIM + "   (c: run the auto-switch check now)" + RESET]
+        notes = claude_accounts.diagnostics()
+        for kind, label in (("sidebar", "Sidebar update"), ("auto", "Auto-switch check"), ("error", "Last hook error")):
+            entry = notes.get(kind)
+            if not entry:
+                lines.append("  %-20s %s" % (label, DIM + "never" + RESET))
+                continue
+            ago = since(entry["at"])
+            text = entry["text"]
+            color = RED if kind == "error" or "fail" in text or "error" in text else ""
+            lines.append("  %-20s %s%s%s %s" % (label, color, text[:90], RESET, DIM + "(" + ago + ")" + RESET))
         lines += ["", DIM + "most quota left: switch to the account with the most headroom when the active one",
                   "  reaches the threshold (claude-swap's own auto-switch).",
                   "weekly reset soonest first: prefer the account whose weekly quota resets first, so",
@@ -207,6 +229,15 @@ class Panel:
             self.switch_by_strategy()
         elif key == b"x" and self.tab in (0, 1) and rows:
             self.remove(rows[cursor], fd)
+        elif key == b"c" and self.tab == 2:
+            self.busy("checking…")
+            try:
+                claude_accounts.auto_tick(force=True)
+                entry = claude_accounts.diagnostics().get("auto")
+                self.message = "Auto-switch check: " + (entry["text"] if entry else "auto-switch is off")
+            except Exception as exc:  # show it rather than crash the panel
+                self.message = RED + "Auto-switch check failed: %s" % exc + RESET
+            self.claude = None
         elif key in (b"+", b"=", b"-", b"_") and self.tab == 2:
             step = 5 if key in (b"+", b"=") else -5
             values = claude_accounts.settings()
