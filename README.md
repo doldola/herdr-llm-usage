@@ -88,35 +88,6 @@ rows = [
 ]
 ```
 
-## Cat
-
-A pixel cat lives in a small pane below your work and reacts to your agents:
-
-| Agents | Cat |
-|---|---|
-| any blocked | stops and looks at you with a `!` bubble |
-| any working | runs back and forth, faster with more agents working |
-| all idle | wanders, sits, blinks, wags its tail; dozes off after 90 seconds |
-| none | sleeps |
-
-The bottom line shows agent counts and the usage the sidebar already cached,
-and the cat warns you when any window is above 90%. It never calls the
-providers itself. It needs a truecolor terminal.
-
-```bash
-herdr plugin action invoke llm-usage.pet
-```
-
-```toml
-[[keys.command]]
-key = "prefix+m"
-type = "plugin_action"
-command = "llm-usage.pet"
-description = "cat"
-```
-
-Press `q` inside the pane to close it.
-
 ## Command line
 
 ```bash
