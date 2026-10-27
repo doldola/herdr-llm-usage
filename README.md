@@ -151,3 +151,7 @@ python3 llm_usage.py status --json   # machine readable
   updates when that changes.
 - The plugin reads the accounts of herdr's environment; `CLAUDE_CONFIG_DIR` and
   `CODEX_HOME` are honored when set there.
+
+## License
+
+[MIT](LICENSE)
