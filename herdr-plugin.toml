@@ -1,6 +1,6 @@
 id = "llm-usage"
 name = "LLM Usage"
-version = "0.5.1"
+version = "0.6.0"
 min_herdr_version = "0.7.5"
 description = "LLM accounts and usage in one panel: Claude and Codex usage, account switching, auto-switch"
 platforms = ["linux", "macos"]
@@ -16,6 +16,12 @@ id = "refresh"
 title = "Refresh LLM usage in sidebar"
 contexts = ["workspace"]
 command = ["python3", "llm_usage.py", "sidebar"]
+
+[[actions]]
+id = "tick"
+title = "Refresh usage and run the auto-switch check"
+contexts = ["workspace"]
+command = ["python3", "llm_usage.py", "event"]
 
 [[actions]]
 id = "codex-restart"

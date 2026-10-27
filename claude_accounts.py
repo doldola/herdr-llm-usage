@@ -108,6 +108,57 @@ def notify(title, body=""):
     herdr(*args)
 
 
+# ---------------------------------------------------------------- Claude Code hook
+
+# Runs the plugin's tick action when a Claude turn ends, so the sidebar and
+# auto-switch keep up even when herdr's event hooks do not fire. It returns at
+# once (the action runs in the background) and does nothing outside herdr.
+HOOK_MARKER = "llm-usage.tick"
+HOOK_COMMAND = ('[ -n "$HERDR_PANE_ID" ] && command -v herdr >/dev/null 2>&1 && '
+                '(herdr plugin action invoke llm-usage.tick >/dev/null 2>&1 &); exit 0')
+
+
+def claude_settings_path():
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "settings.json"
+
+
+def claude_hook_installed():
+    try:
+        settings_json = json.loads(claude_settings_path().read_text())
+    except (OSError, ValueError):
+        return False
+    return HOOK_MARKER in json.dumps((settings_json.get("hooks") or {}).get("Stop") or [])
+
+
+def set_claude_hook(enabled):
+    """Add or remove the Stop hook in Claude Code's settings.json, keeping everything else."""
+    path = claude_settings_path()
+    try:
+        text = path.read_text()
+        data = json.loads(text)
+    except FileNotFoundError:
+        text, data = None, {}
+    except ValueError:
+        raise RuntimeError("%s is not valid JSON; not touching it" % path)
+    hooks = data.setdefault("hooks", {})
+    stop = [group for group in hooks.get("Stop") or [] if HOOK_MARKER not in json.dumps(group)]
+    if enabled:
+        stop.append({"hooks": [{"type": "command", "command": HOOK_COMMAND}]})
+    if stop:
+        hooks["Stop"] = stop
+    else:
+        hooks.pop("Stop", None)
+    if not hooks:
+        data.pop("hooks")
+    backup = path.with_name(path.name + ".llm-usage.bak")
+    if text is not None and not backup.exists():
+        backup.write_text(text)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name("." + path.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    os.replace(tmp, path)
+
+
 def active_email():
     """The signed-in account as Claude Code records it; no network, no cswap."""
     configured = os.environ.get("CLAUDE_CONFIG_DIR")

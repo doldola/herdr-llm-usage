@@ -220,7 +220,7 @@ class Panel:
         cursor = self.cursor[self.tab]
         if key in (b"\r", b"\n"):
             if self.tab == 2:
-                change_setting(SETTINGS[cursor][0], self.claude)
+                self.message = change_setting(SETTINGS[cursor][0], self.claude) or ""
             elif rows:
                 self.switch(rows[cursor])
         elif key == b"s" and self.tab in (0, 1):
@@ -312,6 +312,17 @@ class Panel:
 
 
 def change_setting(key, claude_rows):
+    """Apply one Settings change; returns a message for the panel, if any."""
+    if key == "claude_hook":
+        enable = not claude_accounts.claude_hook_installed()
+        try:
+            claude_accounts.set_claude_hook(enable)
+        except (RuntimeError, OSError) as exc:
+            return RED + str(exc) + RESET
+        if not enable:
+            return "Removed the Claude Code hook."
+        return ("Added a Stop hook to %s. New Claude sessions use it; running ones pick it up after "
+                "/hooks in each session or a restart." % claude_accounts.claude_settings_path())
     values = claude_accounts.settings()
     if key == "auto_switch":
         values["auto_switch"] = not values["auto_switch"]
@@ -335,6 +346,9 @@ SETTINGS = (
     ("threshold", "Switch at", lambda v: "%s%% used" % v["threshold"]),
     ("strategy", "Strategy", lambda v: STRATEGY_NAMES[v["strategy"]]),
     ("model", "Also watch model", lambda v: v.get("model") or DIM + "none (5h and week only)" + RESET),
+    ("claude_hook", "Check on Claude turns",
+     lambda v: (GREEN + "on" if claude_accounts.claude_hook_installed() else DIM + "off") + RESET
+     + DIM + "  (Claude Code Stop hook; works even when herdr events do not)" + RESET),
 )
 
 ORIGINAL_TTY = None
