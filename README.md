@@ -135,7 +135,7 @@ select in herdr's sidebar, within a second of selecting it:
 | Section | Claude | Codex |
 |---|---|---|
 | Instructions | `CLAUDE.md` chain, `.claude/rules` | `AGENTS.md` chain |
-| Memory | the project's memory files | — |
+| Memory | the project's memory files (`M` tidies them) | — |
 | Skills | user, project and enabled-plugin skills; used ones marked `●` and counted | `~/.codex/skills`, project skills |
 | MCP servers | user, local and project (`.mcp.json`) servers; used ones marked | `config.toml` servers |
 | Also | subagents, commands, plugins, hooks, permission mode and rule counts | prompts, model, reasoning effort, approval, sandbox |
@@ -150,6 +150,31 @@ select in herdr's sidebar, within a second of selecting it:
   to its right; `f` turns that off. Selecting the monitor itself keeps the
   last agent on screen.
 - `r` refreshes, `q` closes and returns focus to the agent.
+
+### Tidying memory
+
+On the monitor, `M` (or `enter` on the Memory heading) opens the memory of the
+selected Claude agent's project. Every Claude session in that project folder
+shares it. `tab` filters to files that need attention:
+
+| Filter | Finds |
+|---|---|
+| not in index | files `MEMORY.md` does not link to, so Claude rarely finds them |
+| duplicates | files with the same title or the same content |
+| old 30d+ | files not changed for 30 days |
+
+Links in `MEMORY.md` to files that no longer exist are listed above the files.
+
+| Key | Does |
+|---|---|
+| `enter` | read the file |
+| `d` | archive it: move it to `memory-archive/<date>/` beside `memory/`, outside what Claude reads, and drop its `MEMORY.md` line |
+| `a` | add a `MEMORY.md` line for it |
+| `x` | drop `MEMORY.md` lines that link to missing files |
+| `u` | undo the last change (repeatable) |
+
+Nothing is deleted. Undo puts back only the lines and files a change touched,
+so index lines other sessions wrote in the meantime are kept.
 
 Setup comes from the files each CLI loads for the session's folder, by their
 documented locations: it says what is configured, not that the CLI read it.

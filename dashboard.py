@@ -23,6 +23,7 @@ import agent_setup
 import claude_accounts
 import codex_accounts
 import llm_usage
+import memory_tools
 
 TABS = ("Claude", "Codex", "Settings", "Agents")
 AGENTS_REFRESH = 5  # seconds between Agents tab refreshes while it is shown
@@ -545,7 +546,9 @@ def setup_view(a, targets=None, expanded=()):
 
     if a.get("agent") == "claude":
         memory = setup.get("memory") or []
-        lines += ["", BOLD + "Memory" + RESET + DIM + "  %d files" % len(memory) + RESET]
+        lines.append("")
+        targets[len(lines)] = "manage:memory"
+        lines.append(BOLD + "Memory" + RESET + DIM + "  %d files  (enter or M: tidy)" % len(memory) + RESET)
         base = os.path.dirname(memory[0]["path"]) if memory else None
         shown = memory if "memory" in expanded else memory[:MEMORY_SHOWN]
         for entry in shown:
@@ -782,6 +785,11 @@ class Monitor:
         self.viewing = None  # path of the file open in the viewer
         self.expanded = set()  # sections unfolded past their first entries
         self.select_target = None  # a target to put the cursor on once the lines are rebuilt
+        self.memory_mode = False  # the memory manager is showing
+        self.memory_filter = 0
+        self.memory_cursor = 0
+        self.memory_scroll = 0
+        self.memory_shown = []  # entries listed under the current filter
         self.view_scroll = 0
 
     def poll(self):
@@ -896,6 +904,98 @@ def markdown_rows(path, width):
     return rows
 
 
+def memory_dir_of(activity):
+    transcript = (activity or {}).get("transcript")
+    if (activity or {}).get("agent") != "claude" or not transcript:
+        return None
+    return os.path.join(os.path.dirname(transcript), "memory")
+
+
+def memory_rows(monitor, width):
+    """The memory manager screen; returns (rows, row of the selected entry)."""
+    folder = memory_dir_of(monitor.activity)
+    if not folder or not os.path.isdir(folder):
+        return [BOLD + "Memory" + RESET, "", "This agent has no project memory to tidy (Claude only)."], 0
+    report = memory_tools.scan(folder)
+    name, keep = memory_tools.FILTERS[monitor.memory_filter]
+    counts = [sum(1 for e in report["entries"] if f(e)) for _, f in memory_tools.FILTERS]
+    monitor.memory_shown = [e for e in report["entries"] if keep(e)]
+    monitor.memory_cursor = max(0, min(monitor.memory_cursor, len(monitor.memory_shown) - 1))
+    project = tidy((monitor.activity or {}).get("cwd") or "") or "this project"
+    rows = wrap(BOLD + "Memory" + RESET + DIM + "  of %s, shared by its Claude sessions" % project + RESET, width)
+    rows += wrap(DIM + "%d files · %d KB · %d indexed in MEMORY.md" % (
+        len(report["entries"]), report["size"] // 1024, report["linked"]) + RESET, width)
+    tabs = "  ".join((BOLD + "[%s %d]" + RESET if i == monitor.memory_filter else DIM + " %s %d " + RESET) % (label, n)
+                     for i, ((label, _), n) in enumerate(zip(memory_tools.FILTERS, counts)))
+    rows += wrap(tabs, width) + [""]
+    if report["broken"]:
+        rows += wrap(YELLOW + "MEMORY.md links to missing files: %s  (x drops these lines)" % ", ".join(report["broken"])
+                     + RESET, width) + [""]
+    chosen_row = len(rows)
+    for i, entry in enumerate(monitor.memory_shown):
+        if entry["index"]:
+            mark = BLUE + "★" + RESET
+        elif entry["in_index"]:
+            mark = GREEN + "●" + RESET
+        else:
+            mark = YELLOW + "○" + RESET
+        flags = []
+        if not entry["index"] and not entry["in_index"]:
+            flags.append(YELLOW + "not in index" + RESET)
+        if entry["duplicate_of"]:
+            flags.append(RED + "like " + ", ".join(entry["duplicate_of"][:2]) + RESET)
+        if entry["old"] and not entry["index"]:
+            flags.append(DIM + "old" + RESET)
+        pointer = BOLD + "›" + RESET if i == monitor.memory_cursor else " "
+        if i == monitor.memory_cursor:
+            chosen_row = len(rows)
+        rows += wrap("%s %s %s  %s%s" % (pointer, mark, BOLD + entry["name"] + RESET,
+                                         DIM + "%d lines  %s" % (entry["lines"], since(entry["mtime"])) + RESET,
+                                         ("  " + "  ".join(flags)) if flags else ""), width)
+        if entry["summary"]:
+            rows += wrap("     " + DIM + entry["summary"][:200] + RESET, width)
+    if not monitor.memory_shown:
+        rows.append(DIM + "  nothing under this filter" + RESET)
+    return rows, chosen_row
+
+
+def handle_memory_key(monitor, key):
+    folder = memory_dir_of(monitor.activity)
+    entry = monitor.memory_shown[monitor.memory_cursor] if monitor.memory_shown else None
+    try:
+        if key in (b"\x1b", b"q", b"h", b"\x1b[D", b"\x7f"):
+            monitor.memory_mode = False
+        elif key in (b"j", b"\x1b[B"):
+            monitor.memory_cursor += 1
+        elif key in (b"k", b"\x1b[A"):
+            monitor.memory_cursor = max(0, monitor.memory_cursor - 1)
+        elif key in (b"\t", b"\x1b[C", b"l"):
+            monitor.memory_filter = (monitor.memory_filter + 1) % len(memory_tools.FILTERS)
+            monitor.memory_cursor = 0
+        elif key == b"\x1b[Z":
+            monitor.memory_filter = (monitor.memory_filter - 1) % len(memory_tools.FILTERS)
+            monitor.memory_cursor = 0
+        elif key in (b"\r", b"\n") and entry:
+            monitor.viewing, monitor.view_scroll = entry["path"], 0
+        elif key == b"d" and entry and folder:
+            target = memory_tools.archive(folder, entry["name"])
+            monitor.message = "Archived %s to memory-archive/%s  (u undoes)" % (entry["name"], target.parent.name)
+        elif key == b"a" and entry and folder:
+            if entry["index"] or entry["in_index"]:
+                monitor.message = "%s is already in MEMORY.md" % entry["name"]
+            else:
+                memory_tools.add_to_index(folder, entry["name"], entry["summary"][:120])
+                monitor.message = "Added %s to MEMORY.md  (u undoes)" % entry["name"]
+        elif key == b"x" and folder:
+            dropped = memory_tools.drop_broken(folder)
+            monitor.message = ("Dropped %d broken link(s) from MEMORY.md  (u undoes)" % dropped
+                               if dropped else "No broken links in MEMORY.md")
+        elif key == b"u":
+            monitor.message = memory_tools.undo() or "Nothing to undo"
+    except (OSError, ValueError) as exc:
+        monitor.message = RED + str(exc) + RESET
+
+
 def _run_monitor():
     fd = sys.stdin.fileno()
     saved = termios.tcgetattr(fd)
@@ -920,6 +1020,17 @@ def _run_monitor():
                 out = rows[monitor.view_scroll:monitor.view_scroll + room]
                 hint = "↑↓ space b g G · esc back  %d/%d" % (
                     min(len(rows), monitor.view_scroll + room), len(rows))
+            elif monitor.memory_mode:
+                rows, chosen_row = memory_rows(monitor, size.columns)
+                if monitor.message:
+                    rows += [""] + wrap(monitor.message, size.columns)
+                if chosen_row < monitor.memory_scroll:
+                    monitor.memory_scroll = chosen_row
+                elif chosen_row >= monitor.memory_scroll + room:
+                    monitor.memory_scroll = chosen_row - room + 2
+                monitor.memory_scroll = max(0, min(monitor.memory_scroll, len(rows) - room))
+                out = rows[monitor.memory_scroll:monitor.memory_scroll + room]
+                hint = "↑↓ · enter read · d archive · a index · x fix links · u undo · tab filter · esc back"
             else:
                 try:
                     body = monitor.lines()
@@ -973,6 +1084,12 @@ def _run_monitor():
                 elif key == b"G":
                     monitor.view_scroll = 10 ** 9
                 continue
+            if monitor.memory_mode:
+                handle_memory_key(monitor, key)
+                continue
+            if key == b"M":
+                monitor.memory_mode, monitor.memory_cursor, monitor.memory_scroll = True, 0, 0
+                continue
             if key in (b"q", b"Q", b"\x03"):
                 # Hand focus to the agent first: a client still focused on this pane after it
                 # closes sends its next keybinding to a pane that no longer exists.
@@ -994,6 +1111,8 @@ def _run_monitor():
                     target = monitor.targets[files[min(monitor.selected, len(files) - 1)]]
                     if target.startswith("expand:"):
                         monitor.expanded ^= {target.split(":", 1)[1]}
+                    elif target == "manage:memory":
+                        monitor.memory_mode, monitor.memory_cursor, monitor.memory_scroll = True, 0, 0
                     else:
                         monitor.viewing, monitor.view_scroll = target, 0
             elif key == b"c" and monitor.expanded:
