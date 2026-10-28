@@ -57,6 +57,24 @@ def fit(line, width):
     return "".join(out)
 
 
+# Keys typed with a Korean (2-set) input method arrive as Hangul letters; read
+# them as the Latin key in the same place, so shortcuts work in either mode.
+HANGUL_KEYS = dict(zip("ㅂㅈㄷㄱㅅㅛㅕㅑㅐㅔㅁㄴㅇㄹㅎㅗㅓㅏㅣㅋㅌㅊㅍㅠㅜㅡㅃㅉㄸㄲㅆㅒㅖ",
+                       "qwertyuiopasdfghjklzxcvbnmQWERTOP"))
+
+
+def read_key(fd):
+    """One key press, with Hangul letters mapped to their Latin keys."""
+    key = os.read(fd, 3)
+    try:
+        text = key.decode("utf-8")
+    except UnicodeDecodeError:
+        return key
+    if len(text) == 1 and text in HANGUL_KEYS:
+        return HANGUL_KEYS[text].encode()
+    return key
+
+
 def visible_width(text):
     plain = ANSI.sub("", text)
     return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in plain)
@@ -701,7 +719,7 @@ def run():
             wait = AGENTS_REFRESH if panel.tab == 3 else REFRESH_EVERY
             if not select.select([sys.stdin], [], [], wait)[0]:
                 continue
-            key = os.read(fd, 3)
+            key = read_key(fd)
             if panel.detail and key in (b"\x1b", b"\x7f", b"\x1b[D", b"h"):
                 panel.detail = None
                 continue
@@ -1058,14 +1076,14 @@ def _run_monitor():
                     monitor.scroll = chosen_row - room + 1
                 monitor.scroll = max(0, min(monitor.scroll, len(rows) - room))
                 out = rows[monitor.scroll:monitor.scroll + room]
-                hint = "↑↓ file · enter read%s · f follow %s · q close" % (
+                hint = "↑↓ file · enter read%s · M memory · f follow %s · q close" % (
                     " · c fold" if monitor.expanded else "", "on" if monitor.follow else "off")
             out.append(DIM + hint + RESET)
             sys.stdout.write("\033[H\033[2J" + "\r\n".join(fit(line, size.columns) for line in out))
             sys.stdout.flush()
             if not select.select([sys.stdin], [], [], FOLLOW_POLL)[0]:
                 continue
-            key = os.read(fd, 3)
+            key = read_key(fd)
             monitor.message = ""
             if monitor.viewing:
                 page = max(1, room - 2)
