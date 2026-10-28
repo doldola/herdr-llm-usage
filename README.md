@@ -162,9 +162,15 @@ session's setup and how it is used:
 - **This session**: the running tool, tool counts, markdown files read, model
   and context
 
+`↑` `↓` choose a file (instruction files, rules, memory, a skill's
+`SKILL.md`, markdown files the session read) and `enter` opens it in a reader
+(`↑` `↓`, `space`/`b` to page, `g`/`G`, `esc` back). Long lines wrap to the
+pane's width instead of being cut off, so a narrow monitor still shows
+everything.
+
 When the selected agent is in another tab, the monitor moves into that tab,
-to its right (`f` turns this off). `j` `k` scroll, `r` refreshes, `q`
-closes. Selecting the monitor itself keeps the last agent on screen. It also
+to its right (`f` turns this off). `r` refreshes, `q` closes and returns
+focus to the agent. Selecting the monitor itself keeps the last agent on screen. It also
 keeps the sidebar tokens below current while it is open.
 
 Setup comes from the files each CLI loads for the session's folder, by their

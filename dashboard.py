@@ -56,6 +56,56 @@ def fit(line, width):
     return "".join(out)
 
 
+def visible_width(text):
+    plain = ANSI.sub("", text)
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in plain)
+
+
+def wrap(line, width, indent=None):
+    """Break a line into rows of at most `width` columns, at spaces when possible.
+
+    Colors carry over to the continuation rows, which are indented like the
+    line itself (or by `indent`), so nothing is hidden when a pane is narrow.
+    """
+    if width < 8 or visible_width(line) <= width:
+        return [line]
+    if indent is None:
+        lead = len(ANSI.sub("", line)) - len(ANSI.sub("", line).lstrip(" "))
+        indent = min(lead + 2, width // 3)
+    rows, current, used, active = [], "", 0, ""
+    for token in re.split(r"( +)", line):
+        if not token:
+            continue
+        size = visible_width(token)
+        if used + size > width and used > indent and not token.isspace():
+            rows.append(current + RESET)
+            current, used = " " * indent + active, indent
+        if token.isspace():
+            if used + size <= width:
+                current, used = current + token, used + size
+            elif used > indent:  # padding that does not fit ends the row instead of vanishing
+                rows.append(current + RESET)
+                current, used = " " * indent + active, indent
+            continue
+        i = 0
+        while i < len(token):  # a word longer than the row is split where it overflows
+            match = ANSI.match(token, i)
+            if match:
+                code = match.group(0)
+                active = "" if code == RESET else active + code
+                current += code
+                i = match.end()
+                continue
+            cell = 2 if unicodedata.east_asian_width(token[i]) in ("W", "F") else 1
+            if used + cell > width:
+                rows.append(current + RESET)
+                current, used = " " * indent + active, indent
+            current, used = current + token[i], used + cell
+            i += 1
+    rows.append(current)
+    return rows
+
+
 def bar(used, width=18):
     filled = max(0, min(width, int(round(used / 100.0 * width))))
     color = RED if used >= 90 else YELLOW if used >= 70 else GREEN
@@ -451,8 +501,13 @@ def file_line(entry, base=None):
     return "  %-44s %s" % (path, DIM + "%d lines%s" % (entry["lines"], when) + RESET)
 
 
-def setup_view(a):
-    """What a session is set up with, marked with what it has used so far."""
+def setup_view(a, targets=None):
+    """What a session is set up with, marked with what it has used so far.
+
+    When `targets` is a dict, the index of every line that names a file is
+    mapped to that file's path, so a caller can let the user open it.
+    """
+    targets = {} if targets is None else targets
     status = {"working": YELLOW + "◐ working", "blocked": RED + "! blocked", "done": GREEN + "✓ done"}.get(
         a.get("status"), DIM + "○ " + str(a.get("status") or "")) + RESET
     ctx = agent_activity.context_label(a)
@@ -470,14 +525,23 @@ def setup_view(a):
     lines += ["", BOLD + "Instructions" + RESET + DIM + "  %d files · %d lines" % (
         len(instructions) + len(setup.get("rules") or []),
         sum(e["lines"] for e in instructions + (setup.get("rules") or []))) + RESET]
-    lines += [file_line(e) for e in instructions] or ["  " + DIM + "none" + RESET]
-    lines += [file_line(e) for e in setup.get("rules") or []]
+    for entry in instructions + (setup.get("rules") or []):
+        targets[len(lines)] = entry["path"]
+        lines.append(file_line(entry))
+    if not instructions:
+        lines.append("  " + DIM + "none" + RESET)
 
     if a.get("agent") == "claude":
         memory = setup.get("memory") or []
         lines += ["", BOLD + "Memory" + RESET + DIM + "  %d files" % len(memory) + RESET]
         base = os.path.dirname(memory[0]["path"]) if memory else None
-        lines += [file_line(e, base) for e in memory[:8]] or ["  " + DIM + "none for this project" + RESET]
+        for entry in memory[:12]:
+            targets[len(lines)] = entry["path"]
+            lines.append(file_line(entry, base))
+        if len(memory) > 12:
+            lines.append("  " + DIM + "… %d more" % (len(memory) - 12) + RESET)
+        if not memory:
+            lines.append("  " + DIM + "none for this project" + RESET)
 
     skills = setup.get("skills") or []
     names = {k["name"] for k in skills}
@@ -488,6 +552,8 @@ def setup_view(a):
     for skill in ordered[:16]:
         count = used_skills.get(skill["name"], 0)
         mark = GREEN + "●" + RESET if count else DIM + "○" + RESET
+        if skill.get("path"):
+            targets[len(lines)] = skill["path"]
         lines.append("  %s %-22s %s %s%s" % (mark, skill["name"][:22], DIM + "%-16s" % skill["source"][:16] + RESET,
                                                  DIM + skill["description"][:60] + RESET,
                                                  ("  " + GREEN + "×%d" % count + RESET) if count else ""))
@@ -529,7 +595,14 @@ def setup_view(a):
     lines.append("  tools    " + (DIM + " · ".join("%s %d" % (short_tool(n), c) for n, c in tools[:8]) + RESET
                                   if tools else DIM + "none yet" + RESET))
     if a.get("md_files"):
-        lines.append("  md read  " + DIM + ", ".join(os.path.basename(p) for p in a["md_files"][:6]) + RESET)
+        lines.append("  md read")
+        for path in a["md_files"][:10]:
+            full = os.path.expanduser(path)
+            if not os.path.isabs(full) and a.get("cwd"):
+                full = os.path.join(a["cwd"], full)
+            if os.path.isfile(full):
+                targets[len(lines)] = full
+            lines.append("    " + tidy(full) + ("" if os.path.isfile(full) else DIM + "  (not found)" + RESET))
     return lines
 
 
@@ -693,6 +766,10 @@ class Monitor:
         self.panel = Panel()  # for its detail drawing and the sidebar push
         self.sidebar_at = 0.0
         self.moved = (None, 0.0)  # tab this monitor last moved to, and when
+        self.targets = {}  # line index -> file path, for the lines that name a file
+        self.selected = 0  # position in the sorted target lines
+        self.viewing = None  # path of the file open in the viewer
+        self.view_scroll = 0
 
     def poll(self):
         agents = herdr_json("agent", "list").get("agents") or []
@@ -706,7 +783,7 @@ class Monitor:
         if not self.shown and watched:
             self.shown = watched[0]
         if self.shown and self.shown.get("pane_id") != previous:
-            self.scroll = 0
+            self.scroll = self.selected = 0
         if self.shown and focused and self.follow:
             self.join_tab(focused)
         self.activity = agent_activity.pane_activity(self.shown) if self.shown else None
@@ -735,6 +812,7 @@ class Monitor:
             self.message = DIM + "could not follow to the agent's tab; press f to stop following" + RESET
 
     def lines(self):
+        self.targets = {}
         if not claude_accounts.settings()["agent_monitor"]:
             return ["Agent monitoring is off.", "",
                     "Press enter to turn it on. This pane then shows the agent you select in",
@@ -743,9 +821,12 @@ class Monitor:
         if not self.shown:
             return ["No Claude or Codex agents."]
         a = self.shown
-        view = setup_view(self.activity) if self.activity else [a.get("pane_id") or "?"]
+        targets = {}
+        view = setup_view(self.activity, targets) if self.activity else [a.get("pane_id") or "?"]
         provider = "Claude" if a.get("agent") == "claude" else "Codex"
         usage = [line for line in usage_header(self.usage) if line.startswith(BOLD + provider)]
+        shift = len(usage)  # the usage lines go in after the first line
+        self.targets = {i + (shift if i >= 1 else 0): path for i, path in targets.items()}
         return view[:1] + usage + view[1:]
 
 
@@ -774,6 +855,34 @@ def run_monitor():
         return 1
 
 
+VIEW_LIMIT = 4000  # lines of a file the viewer reads
+
+
+def markdown_rows(path, width):
+    """A markdown file as display rows: headings bold, code dimmed, long lines wrapped."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            text = [next(handle, None) for _ in range(VIEW_LIMIT)]
+    except OSError as exc:
+        return [RED + str(exc) + RESET]
+    rows, in_code = [], False
+    for line in (t.rstrip("\n") for t in text if t is not None):
+        if line.lstrip().startswith("```"):
+            in_code = not in_code
+            rows.append(DIM + line + RESET)
+            continue
+        if in_code:
+            styled = DIM + line + RESET
+        elif line.startswith("#"):
+            styled = BOLD + BLUE + line + RESET
+        elif line.strip().startswith("---") and not line.strip("-").strip():
+            styled = DIM + line + RESET
+        else:
+            styled = line
+        rows += wrap(styled, width)
+    return rows
+
+
 def _run_monitor():
     fd = sys.stdin.fileno()
     saved = termios.tcgetattr(fd)
@@ -790,21 +899,62 @@ def _run_monitor():
                     monitor.message = RED + "%s: %s" % (type(exc).__name__, exc) + RESET
                 next_poll = time.time() + FOLLOW_POLL
             size = shutil.get_terminal_size()
-            try:
-                body = monitor.lines()
-            except Exception as exc:  # one odd session must not take the pane down
-                body = [RED + "Could not show this agent: %s: %s" % (type(exc).__name__, exc) + RESET]
-            room = max(1, size.lines - 3)
-            monitor.scroll = max(0, min(monitor.scroll, len(body) - room))
-            out = body[monitor.scroll:monitor.scroll + room] + [monitor.message]
-            follow = "f follow tabs: " + ("on" if monitor.follow else "off")
-            out.append(DIM + "j/k scroll · %s · r refresh · q close" % follow + RESET)
+            room = max(1, size.lines - 2)
+            if monitor.viewing:
+                rows = [BOLD + tidy(monitor.viewing) + RESET, DIM + "─" * min(size.columns, 60) + RESET]
+                rows += markdown_rows(monitor.viewing, size.columns)
+                monitor.view_scroll = max(0, min(monitor.view_scroll, len(rows) - room))
+                out = rows[monitor.view_scroll:monitor.view_scroll + room]
+                hint = "↑↓ space b g G · esc back  %d/%d" % (
+                    min(len(rows), monitor.view_scroll + room), len(rows))
+            else:
+                try:
+                    body = monitor.lines()
+                except Exception as exc:  # one odd session must not take the pane down
+                    body = [RED + "Could not show this agent: %s: %s" % (type(exc).__name__, exc) + RESET]
+                files = sorted(monitor.targets)
+                monitor.selected = max(0, min(monitor.selected, len(files) - 1))
+                chosen = files[monitor.selected] if files else None
+                rows, chosen_row = [], 0
+                for index, line in enumerate(body):
+                    if index == chosen:
+                        line = BOLD + "›" + RESET + line[1:] if line.startswith(" ") else line
+                        chosen_row = len(rows)
+                    rows += wrap(line, size.columns)
+                if monitor.message:
+                    rows += wrap(monitor.message, size.columns)
+                # keep the selected file in view
+                if chosen_row < monitor.scroll:
+                    monitor.scroll = chosen_row
+                elif chosen_row >= monitor.scroll + room:
+                    monitor.scroll = chosen_row - room + 1
+                monitor.scroll = max(0, min(monitor.scroll, len(rows) - room))
+                out = rows[monitor.scroll:monitor.scroll + room]
+                hint = "↑↓ file · enter read · f follow %s · q close" % ("on" if monitor.follow else "off")
+            out.append(DIM + hint + RESET)
             sys.stdout.write("\033[H\033[2J" + "\r\n".join(fit(line, size.columns) for line in out))
             sys.stdout.flush()
             if not select.select([sys.stdin], [], [], FOLLOW_POLL)[0]:
                 continue
             key = os.read(fd, 3)
             monitor.message = ""
+            if monitor.viewing:
+                page = max(1, room - 2)
+                if key in (b"\x1b", b"q", b"h", b"\x1b[D", b"\x7f"):
+                    monitor.viewing = None
+                elif key in (b"j", b"\x1b[B"):
+                    monitor.view_scroll += 1
+                elif key in (b"k", b"\x1b[A"):
+                    monitor.view_scroll = max(0, monitor.view_scroll - 1)
+                elif key in (b" ", b"\x1b[6"):
+                    monitor.view_scroll += page
+                elif key in (b"b", b"\x1b[5"):
+                    monitor.view_scroll = max(0, monitor.view_scroll - page)
+                elif key == b"g":
+                    monitor.view_scroll = 0
+                elif key == b"G":
+                    monitor.view_scroll = 10 ** 9
+                continue
             if key in (b"q", b"Q", b"\x03"):
                 # Hand focus to the agent first: a client still focused on this pane after it
                 # closes sends its next keybinding to a pane that no longer exists.
@@ -814,15 +964,20 @@ def _run_monitor():
                 claude_accounts.note("monitor", "closed with q, focus back to %s" % (target or "?"))
                 return 0
             if key in (b"j", b"\x1b[B"):
-                monitor.scroll += 1
+                monitor.selected += 1
             elif key in (b"k", b"\x1b[A"):
-                monitor.scroll = max(0, monitor.scroll - 1)
+                monitor.selected = max(0, monitor.selected - 1)
+            elif key in (b"\r", b"\n"):
+                if not claude_accounts.settings()["agent_monitor"]:
+                    monitor.message = change_setting("agent_monitor", None) or ""
+                    next_poll = 0
+                elif monitor.targets:
+                    files = sorted(monitor.targets)
+                    monitor.viewing = monitor.targets[files[min(monitor.selected, len(files) - 1)]]
+                    monitor.view_scroll = 0
             elif key == b"f":
                 monitor.follow = not monitor.follow
             elif key == b"r":
-                next_poll = 0
-            elif key in (b"\r", b"\n") and not claude_accounts.settings()["agent_monitor"]:
-                monitor.message = change_setting("agent_monitor", None) or ""
                 next_poll = 0
     finally:
         sys.stdout.write("\033[?25h")
