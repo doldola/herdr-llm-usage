@@ -298,7 +298,8 @@ class Panel:
             lines += ["", RED + "Auto-switch needs claude-swap: uv tool install claude-swap" + RESET]
         lines += ["", BOLD + "Background activity" + RESET + DIM + "   (c: run the auto-switch check now)" + RESET]
         notes = claude_accounts.diagnostics()
-        for kind, label in (("sidebar", "Sidebar update"), ("auto", "Auto-switch check"), ("error", "Last hook error")):
+        for kind, label in (("sidebar", "Sidebar update"), ("auto", "Auto-switch check"), ("monitor", "Monitor pane"),
+                            ("error", "Last hook error")):
             entry = notes.get(kind)
             if not entry:
                 lines.append("  %-20s %s" % (label, DIM + "never" + RESET))
@@ -749,7 +750,31 @@ class Monitor:
 
 
 def run_monitor():
-    """A pane beside your work showing the agent selected in herdr's sidebar."""
+    """A pane beside your work showing the agent selected in herdr's sidebar.
+
+    A crash would close the pane before anyone could read why, so it is shown
+    in the pane and kept in the diagnostics until a key is pressed.
+    """
+    claude_accounts.note("monitor", "started in pane %s" % os.environ.get("HERDR_PANE_ID"))
+    try:
+        return _run_monitor()
+    except Exception:
+        import traceback
+
+        detail = traceback.format_exc()
+        claude_accounts.note("monitor", "crashed: " + detail.strip().splitlines()[-1])
+        sys.stdout.write("\033[?25h\033[0m\r\nThe monitor stopped:\r\n\r\n" + detail.replace("\n", "\r\n")
+                         + "\r\nPress any key to close this pane.")
+        sys.stdout.flush()
+        try:
+            tty.setcbreak(sys.stdin.fileno())  # any key, not a whole line
+            os.read(sys.stdin.fileno(), 1)
+        except (OSError, termios.error):
+            pass
+        return 1
+
+
+def _run_monitor():
     fd = sys.stdin.fileno()
     saved = termios.tcgetattr(fd)
     monitor = Monitor()
@@ -765,7 +790,10 @@ def run_monitor():
                     monitor.message = RED + "%s: %s" % (type(exc).__name__, exc) + RESET
                 next_poll = time.time() + FOLLOW_POLL
             size = shutil.get_terminal_size()
-            body = monitor.lines()
+            try:
+                body = monitor.lines()
+            except Exception as exc:  # one odd session must not take the pane down
+                body = [RED + "Could not show this agent: %s: %s" % (type(exc).__name__, exc) + RESET]
             room = max(1, size.lines - 3)
             monitor.scroll = max(0, min(monitor.scroll, len(body) - room))
             out = body[monitor.scroll:monitor.scroll + room] + [monitor.message]
@@ -778,6 +806,7 @@ def run_monitor():
             key = os.read(fd, 3)
             monitor.message = ""
             if key in (b"q", b"Q", b"\x03"):
+                claude_accounts.note("monitor", "closed with q")
                 return 0
             if key in (b"j", b"\x1b[B"):
                 monitor.scroll += 1
