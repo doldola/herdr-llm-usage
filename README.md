@@ -134,12 +134,19 @@ select in herdr's sidebar, within a second of selecting it:
 
 | Section | Claude | Codex |
 |---|---|---|
+| Workflows | workflows and subagents (`Agent`/`Task`) the session started: `◐` running with elapsed time, `✓` done, `✗` failed; the task list's progress and the tasks in progress | — |
 | Instructions | `CLAUDE.md` chain, `.claude/rules` | `AGENTS.md` chain |
 | Memory | the project's memory files (`m` tidies them) | — |
-| Skills | user, project and enabled-plugin skills; used ones marked `●` and counted (`s` manages them) | `~/.codex/skills`, project skills (`s`) |
+| Skills | user, project and enabled-plugin skills: `◉` loaded since your last prompt, `●` loaded earlier in the session, `○` not loaded; counted (`s` manages them) | `~/.codex/skills`, project skills (`s`) |
 | MCP servers | user, local and project (`.mcp.json`) servers; used ones marked | `config.toml` servers |
 | Also | subagents, commands, plugins, hooks, permission mode and rule counts | prompts, model, reasoning effort, approval, sandbox |
 | This session | running tool, tool counts, markdown files read, model, context | same |
+
+A skill counts as loaded when the session calls the Skill tool for it, you run
+it as `/name`, or the agent reads its `SKILL.md`. A skill the agent merely could
+use is not marked: the CLI lists every skill's description to the model, and
+only these three load one. Workflows and subagents are read from the same
+transcript; a background one is marked done when its completion notice arrives.
 
 - `↑` `↓` choose a file: an instruction file, rule, memory file, a skill's
   `SKILL.md` or a markdown file the session read; `enter` opens it in a reader
@@ -218,7 +225,7 @@ Agent panes get tokens you can place in herdr's sidebar rows:
 | `$usage` | `5h 82% ↻3h30m · week 73% ↻2d2h` | both windows in one |
 | `$usage_account` | `me@example.com` | signed-in account |
 | `$tool` | `Bash`, `notion:notion-search` | running tool, while working (monitoring on) |
-| `$skill` | `docx` | last skill used (monitoring on) |
+| `$skill` | `docx` | skill loaded since your last prompt (monitoring on) |
 | `$ctx` | `ctx 24%` (Codex), `ctx 92k` (Claude) | context use (monitoring on) |
 
 A layout for a narrow sidebar, with usage colored at 70% and 90%:

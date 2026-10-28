@@ -1,6 +1,6 @@
 id = "llm-usage"
 name = "LLM Usage"
-version = "0.12.0"
+version = "0.13.0"
 min_herdr_version = "0.7.5"
 description = "LLM accounts, usage and agent activity in one panel: Claude and Codex usage, account switching, auto-switch, tools and skills per pane"
 platforms = ["linux", "macos"]

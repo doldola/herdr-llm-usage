@@ -85,8 +85,9 @@ def scan(activity):
     for entry in entries:
         names.setdefault(entry["name"], []).append(entry)
     for entry in entries:
-        entry["uses"] = uses.get(entry["name"], 0)
-        entry["session_uses"] = session_uses.get(entry["name"], 0)
+        aliases = {entry["name"], Path(entry["path"]).parent.name}  # called by name or by folder
+        entry["uses"] = sum(uses.get(n, 0) for n in aliases)
+        entry["session_uses"] = sum(session_uses.get(n, 0) for n in aliases)
         entry["duplicate"] = len([e for e in names[entry["name"]] if e["enabled"]]) > 1 and entry["enabled"]
         entry["lines"] = sum(1 for _ in open(entry["path"], "rb")) if os.path.isfile(entry["path"]) else 0
         entry["managed"] = not entry["source"].startswith("plugin")

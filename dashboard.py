@@ -529,6 +529,50 @@ def file_line(entry, base=None):
     return "  %-44s %s" % (path, DIM + "%d lines%s" % (entry["lines"], when) + RESET)
 
 
+def duration(seconds):
+    seconds = int(max(0, seconds))
+    if seconds < 60:
+        return "%ds" % seconds
+    if seconds < 3600:
+        return "%dm" % (seconds // 60)
+    return "%dh %dm" % (seconds // 3600, seconds % 3600 // 60)
+
+
+def _epoch(timestamp):
+    passed = agent_activity.age(timestamp)
+    return None if passed is None else time.time() - passed
+
+
+def workflow_lines(a, expanded):
+    """Workflows and subagents the session started, running ones first, and its task list."""
+    flows = list((a.get("flows") or {}).values())
+    tasks = agent_activity.task_summary(a)
+    if not flows and not tasks:
+        return []
+    running = [f for f in flows if f["status"] == "running"]
+    lines = ["", BOLD + "Workflows" + RESET + DIM + "  %d running · %d this session" % (len(running), len(flows)) + RESET]
+    finished = [f for f in flows if f["status"] != "running"]
+    shown = running + list(reversed(finished))[:FLOWS_SHOWN]
+    for flow in shown:
+        start, end = _epoch(flow.get("at")), _epoch(flow.get("end"))
+        if flow["status"] == "running":
+            mark, took = YELLOW + "◐" + RESET, ("running " + duration(time.time() - start)) if start else "running"
+        else:
+            mark = GREEN + "✓" + RESET if flow["status"] == "completed" else RED + "✗" + RESET
+            took = (duration(end - start) + " · " + since(end)) if start and end else flow["status"]
+        kind = "workflow" if flow["kind"] == "workflow" else (flow.get("type") or "agent")
+        lines.append("  %s %-34s %s" % (mark, flow["title"][:34], DIM + "%s · %s" % (kind[:18], took) + RESET))
+    if len(finished) > FLOWS_SHOWN:
+        lines.append("  " + DIM + "… %d earlier" % (len(finished) - FLOWS_SHOWN) + RESET)
+    if tasks:
+        done, doing, total, items = tasks
+        lines.append("  " + DIM + "tasks: " + RESET + "%d (%d done · %d in progress)" % (total, done, doing))
+        for task in [t for t in items if t["status"] == "in_progress"][:5]:
+            lines.append("    " + YELLOW + "▸ " + RESET + task["subject"])
+    return lines
+
+
+FLOWS_SHOWN = 5  # finished workflows listed under the running ones
 SKILLS_SHOWN = 16  # skills listed before the rest fold into a "more" line
 MEMORY_SHOWN = 12
 
@@ -552,6 +596,8 @@ def setup_view(a, targets=None, expanded=()):
     setup = cached_setup(a) or {}
     used_skills = a.get("skill_uses") or {}
     used_mcp = a.get("mcp") or {}
+
+    lines += workflow_lines(a, expanded)
 
     instructions = setup.get("instructions") or []
     lines += ["", BOLD + "Instructions" + RESET + DIM + "  %d files · %d lines" % (
@@ -578,23 +624,37 @@ def setup_view(a, targets=None, expanded=()):
             lines.append("  " + DIM + "none for this project" + RESET)
 
     skills = setup.get("skills") or []
-    names = {k["name"] for k in skills}
-    extra = [n for n in used_skills if n not in names]  # used but not found on disk (e.g. built in)
     lines.append("")
     targets[len(lines)] = "manage:skills"
-    lines.append(BOLD + "Skills" + RESET + DIM + "  %d available · %d used this session  (enter or s: manage)" % (
-        len(skills), len(used_skills)) + RESET)
-    ordered = sorted(skills, key=lambda k: (-used_skills.get(k["name"], 0), k["name"]))
+    skill_at, turn_at = a.get("skill_at") or {}, _epoch(a.get("turn_at"))
+    in_turn = {n for n, at in skill_at.items() if turn_at and _epoch(at) and _epoch(at) >= turn_at - 1}
+    lines.append(BOLD + "Skills" + RESET + DIM + "  %d available · %d used this session · %d this turn  (enter or s: manage)" % (
+        len(skills), len(used_skills), len(in_turn)) + RESET)
+    lines.append("  " + DIM + "◉ loaded this turn  ● loaded earlier in the session  ○ not loaded" + RESET)
+    def aliases(skill):  # the CLI may call a skill by its folder name rather than its front-matter name
+        return {skill["name"], os.path.basename(os.path.dirname(skill.get("path") or ""))} - {""}
+
+    def uses(skill):
+        return sum(used_skills.get(n, 0) for n in aliases(skill))
+
+    def now(skill):
+        return bool(aliases(skill) & in_turn)
+
+    known = set().union(*(aliases(k) for k in skills)) if skills else set()
+    extra = [n for n in used_skills if n not in known]
+    ordered = sorted(skills, key=lambda k: (not now(k), -uses(k), k["name"]))
     for skill in ordered if "skills" in expanded else ordered[:SKILLS_SHOWN]:
-        count = used_skills.get(skill["name"], 0)
-        mark = GREEN + "●" + RESET if count else DIM + "○" + RESET
+        count = uses(skill)
+        mark = (BOLD + GREEN + "◉" + RESET if now(skill) else
+                GREEN + "●" + RESET if count else DIM + "○" + RESET)
         if skill.get("path"):
             targets[len(lines)] = skill["path"]
         lines.append("  %s %-22s %s %s%s" % (mark, skill["name"][:22], DIM + "%-16s" % skill["source"][:16] + RESET,
                                                  DIM + skill["description"][:60] + RESET,
                                                  ("  " + GREEN + "×%d" % count + RESET) if count else ""))
     lines += fold_line(targets, len(lines), "skills", len(ordered) - SKILLS_SHOWN, "skills" in expanded)
-    lines += ["  %s %s  ×%d" % (GREEN + "●" + RESET, n, used_skills[n]) for n in extra]
+    lines += ["  %s %s  %s" % (BOLD + GREEN + "◉" + RESET if n in in_turn else GREEN + "●" + RESET, n,
+                               DIM + "built in or not found on disk · ×%d" % used_skills[n] + RESET) for n in extra]
 
     mcp = setup.get("mcp") or []
     lines += ["", BOLD + "MCP servers" + RESET + DIM + "  %d configured · %d used" % (len(mcp), len(used_mcp)) + RESET]

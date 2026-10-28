@@ -16,9 +16,14 @@ import re
 import time
 from pathlib import Path
 
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 MAX_RECENT = 12  # markdown files and skills kept per session, newest first
 MD_PATH = re.compile(r"""(?:^|[\s'"=(])((?:~|\.{0,2}/)?[\w@.~/+-]*\.md)\b""")
+COMMAND_NAME = re.compile(r"<command-name>/?([^<\s]+)</command-name>")
+MAX_FLOWS = 30  # workflows and subagents kept per session, newest last
+FLOW_TITLE_KEYS = ("description", "name", "title", "workflow", "subject", "prompt")
+NOTICE = re.compile(r"""(?i)(?:workflow|agent|task)\W{0,3}["'“]?(.{1,80}?)["'”]?\W{0,3}(?:has\s+)?(completed|finished|failed|cancelled|canceled|killed|stopped)""")
+STATUS_TAG = re.compile(r"<status>\s*(\w+)\s*</status>")
 
 
 def state_dir():
@@ -86,10 +91,20 @@ def _remember_codex_path(session_id, path):
 
 def empty_stats():
     return {"tools": {}, "skills": [], "skill_uses": {}, "md_files": [], "pending": {}, "context": None,
-            "context_window": None, "last_tool": None, "last_at": None, "model": None}
+            "context_window": None, "last_tool": None, "last_at": None, "model": None,
+            "skill_at": {}, "turn_at": None, "flows": {}, "tasks": {}, "task_ids": {}, "task_list": None}
 
 
-def _use_skill(stats, name):
+def skill_name(name):
+    """The bare skill name: "plugin:skill" and "/skill" both become "skill"."""
+    return str(name).strip().lstrip("/").split(":")[-1]
+
+
+def _use_skill(stats, name, when=None):
+    name = skill_name(name)
+    if not name:
+        return
+    stats.setdefault("skill_at", {})[name] = when or stats.get("last_at")
     _push_recent(stats["skills"], name)
     stats["skill_uses"][name] = stats["skill_uses"].get(name, 0) + 1
 
@@ -117,8 +132,149 @@ def _md_in(text):
     return [m for m in MD_PATH.findall(text or "") if len(m) > 3]
 
 
+def _text_of(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(_text_of(p.get("text") if p.get("type") == "text" else p.get("content"))
+                         for p in content if isinstance(p, dict))
+    return ""
+
+
+FLOW_TOOLS = ("Agent", "Task")  # subagents; any tool with "workflow" in its name is a workflow
+TASK_TOOLS = ("TaskCreate", "TaskUpdate", "TodoWrite")
+
+
+def _flow_title(data):
+    for key in FLOW_TITLE_KEYS:
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip().splitlines()[0][:80]
+    return None
+
+
+def _start_flow(stats, call_id, name, data, when):
+    kind = "agent" if name in FLOW_TOOLS else "workflow"
+    flows = stats["flows"]
+    flows[call_id] = {"kind": kind, "title": _flow_title(data) or data.get("subagent_type") or name,
+                      "type": data.get("subagent_type") or data.get("model"), "status": "running",
+                      "background": bool(data.get("run_in_background")), "at": when, "end": None}
+    for stale in list(flows)[:-MAX_FLOWS]:
+        flows.pop(stale)
+
+
+def _finish_flow(stats, flow, status, when):
+    if flow["status"] == "running":
+        flow["status"], flow["end"] = status, when
+
+
+def _flow_result(stats, call_id, part, when):
+    flow = stats["flows"].get(call_id)
+    if not flow:
+        return
+    text = _text_of(part.get("content")).lower()
+    if part.get("is_error"):
+        _finish_flow(stats, flow, "failed", when)
+    elif flow["background"] or any(w in text for w in ("running in the background", "launched", "started in the background",
+                                                         "is running", "agent id", "task id")):
+        flow["background"] = True  # its result arrives later as a notice
+    else:
+        _finish_flow(stats, flow, "completed", when)
+
+
+def _notice(stats, text, when):
+    """Mark background workflows and agents done from the notices the CLI writes into the conversation."""
+    status = None
+    tag = STATUS_TAG.search(text)
+    if tag:
+        status = tag.group(1).lower()
+    running = [f for f in stats["flows"].values() if f["status"] == "running" and f["background"]]
+    if not running:
+        return
+    match = NOTICE.search(text)
+    status = status or (match.group(2).lower() if match else None)
+    if not status or status in ("running", "pending", "in_progress"):
+        return
+    status = "completed" if status in ("completed", "finished", "done", "success", "succeeded") else "failed"
+    for flow in reversed(running):  # the newest flow whose title the notice names, else the only one running
+        if flow["title"] and flow["title"].lower()[:40] in text.lower():
+            _finish_flow(stats, flow, status, when)
+            return
+    if len(running) == 1:
+        _finish_flow(stats, running[0], status, when)
+
+
+def _task_call(stats, call_id, name, data):
+    tasks = stats["tasks"]
+    if name == "TodoWrite":
+        stats["tasks"] = {str(i): {"subject": str(t.get("content") or t.get("subject") or "")[:80],
+                                   "status": t.get("status") or "pending"}
+                          for i, t in enumerate(data.get("todos") or []) if isinstance(t, dict)}
+    elif name == "TaskCreate":
+        tasks["call:" + str(call_id)] = {"subject": str(data.get("subject") or data.get("title") or "")[:80],
+                                        "status": "pending"}
+    elif name == "TaskUpdate":
+        task_id = str(data.get("taskId") or data.get("task_id") or data.get("id") or "")
+        key = stats["task_ids"].get(task_id, task_id)
+        task = tasks.setdefault(key, {"subject": "#" + task_id, "status": "pending"})
+        if data.get("subject"):
+            task["subject"] = str(data["subject"])[:80]
+        if data.get("status"):
+            task["status"] = data["status"]
+        if data.get("status") == "deleted":
+            tasks.pop(key, None)
+
+
+def _task_result(stats, call_id, part):
+    key = "call:" + str(call_id)
+    if key in stats["tasks"]:
+        found = re.search(r"#\s*(\w+)", _text_of(part.get("content")))
+        if found:
+            stats["task_ids"][found.group(1)] = key
+
+
+def _task_reminder(stats, attachment):
+    items = attachment.get("content")
+    if isinstance(items, list):
+        stats["task_list"] = [{"subject": str(t.get("subject") or t.get("content") or t.get("title") or "")[:80],
+                               "status": t.get("status") or "pending"} for t in items if isinstance(t, dict)]
+
+
+def task_summary(activity):
+    """(done, in progress, total) of the session's task list, or None."""
+    tasks = activity.get("task_list")
+    if tasks is None:
+        tasks = list((activity.get("tasks") or {}).values())
+    if not tasks:
+        return None
+    done = sum(1 for t in tasks if t["status"] in ("completed", "done"))
+    doing = sum(1 for t in tasks if t["status"] == "in_progress")
+    return done, doing, len(tasks), tasks
+
+
 def apply_claude(stats, entry):
+    for key, value in empty_stats().items():  # caches written before a field existed
+        stats.setdefault(key, value)
+    when = entry.get("timestamp") or stats["last_at"]
+    if entry.get("type") == "attachment":
+        attachment = entry.get("attachment") or {}
+        if attachment.get("type") == "task_reminder":
+            _task_reminder(stats, attachment)
+        return
     message = entry.get("message") or {}
+    if entry.get("type") == "user" and not entry.get("isSidechain"):
+        content = message.get("content")
+        is_result = isinstance(content, list) and any(isinstance(p, dict) and p.get("type") == "tool_result"
+                                                      for p in content)
+        text = _text_of(content)
+        if not is_result and not entry.get("isMeta"):
+            if not text.lstrip().startswith("<"):
+                stats["turn_at"] = when  # a prompt the user typed starts a new turn
+            for command in COMMAND_NAME.findall(text):
+                stats["turn_at"] = when
+                _use_skill(stats, command, when)
+        if is_result or "orkflow" in text or "<task-notification>" in text or "<status>" in text:
+            _notice(stats, text, when)
     if entry.get("type") == "assistant":
         usage = message.get("usage") or {}
         if usage:
@@ -132,18 +288,26 @@ def apply_claude(stats, entry):
             name = part.get("name") or "?"
             data = part.get("input") or {}
             _count(stats, name)
-            _start(stats, part.get("id") or name, name)
+            call_id = part.get("id") or name
+            _start(stats, call_id, name)
+            if name in FLOW_TOOLS or "workflow" in name.lower():
+                _start_flow(stats, call_id, name, data, when)
+            elif name in TASK_TOOLS:
+                _task_call(stats, call_id, name, data)
             if name == "Skill":
                 skill = data.get("skill") or data.get("command") or data.get("name")
                 if skill:
-                    _use_skill(stats, str(skill))
+                    _use_skill(stats, str(skill), when)
             path = data.get("file_path") or data.get("path") or ""
             if isinstance(path, str) and path.endswith(".md"):
                 _push_recent(stats["md_files"], path)
                 if path.endswith("SKILL.md"):
-                    _use_skill(stats, Path(path).parent.name)
+                    _use_skill(stats, Path(path).parent.name, when)
         elif part.get("type") == "tool_result":
-            stats["pending"].pop(part.get("tool_use_id"), None)
+            call_id = part.get("tool_use_id")
+            stats["pending"].pop(call_id, None)
+            _flow_result(stats, call_id, part, when)
+            _task_result(stats, call_id, part)
     stats["last_at"] = entry.get("timestamp") or stats["last_at"]
 
 
@@ -306,9 +470,20 @@ def context_label(activity):
     return "ctx " + short_tokens(used)
 
 
+def turn_skill(activity):
+    """The newest skill loaded since the user's last prompt; for Codex, the newest one."""
+    skills, turn = activity.get("skills") or [], activity.get("turn_at")
+    if not skills:
+        return None
+    if activity.get("agent") != "claude" or not turn:
+        return skills[0]
+    at = (activity.get("skill_at") or {}).get(skills[0])
+    return skills[0] if at and str(at) >= str(turn) else None
+
+
 def sidebar_values(activity):
     """The short strings the sidebar shows for a pane."""
-    return {"tool": current_tool(activity), "skill": (activity.get("skills") or [None])[0],
+    return {"tool": current_tool(activity), "skill": turn_skill(activity),
             "ctx": context_label(activity)}
 
 
