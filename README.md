@@ -103,12 +103,13 @@ the plugin checks the active account against the threshold:
 "Also watch model" adds that model's weekly window (for example Fable) to the
 threshold check. Each switch shows a herdr notification.
 
-"Check on Claude turns" adds a Stop hook to Claude Code's `settings.json` that
-runs `herdr plugin action invoke llm-usage.tick` in the background whenever a
-Claude turn ends (and does nothing outside herdr). Turn it on if the sidebar
-stops updating: herdr's event hooks can stop firing for a plugin, and this
-path does not depend on them. Other hooks and settings are kept, a backup is
-saved next to the file once, and turning it off removes only this hook. New
+"Check while Claude works" adds hooks to Claude Code's `settings.json` that run
+`herdr plugin action invoke llm-usage.tick` in the background after tool calls
+and when a turn ends, at most once a minute across all panes (and nothing
+outside herdr). herdr's own hooks only run when an agent changes state, so a
+single long turn would otherwise go unchecked; this keeps the sidebar and
+auto-switch current during it. Other hooks and settings are kept, a backup is
+saved next to the file once, and turning it off removes only these hooks. New
 Claude sessions use it; running ones pick it up after `/hooks` or a restart.
 
 The Settings tab also shows when the sidebar and the auto-switch check last ran

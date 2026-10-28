@@ -66,6 +66,16 @@ def note(kind, text):
     os.replace(tmp, path)
 
 
+def clear_note(kind):
+    data = diagnostics()
+    if kind in data:
+        data.pop(kind)
+        path = state_dir() / "diagnostics.json"
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data))
+        os.replace(tmp, path)
+
+
 def diagnostics():
     try:
         return json.loads((state_dir() / "diagnostics.json").read_text())
@@ -110,28 +120,47 @@ def notify(title, body=""):
 
 # ---------------------------------------------------------------- Claude Code hook
 
-# Runs the plugin's tick action when a Claude turn ends, so the sidebar and
-# auto-switch keep up even when herdr's event hooks do not fire. It returns at
-# once (the action runs in the background) and does nothing outside herdr.
+# Runs the plugin's tick action while Claude works (after tool calls) and when a
+# turn ends, so the sidebar and auto-switch keep up during long turns, when no
+# herdr agent-state event fires. The shell part allows one run a minute across
+# all panes, returns at once (the action runs in the background), and does
+# nothing outside herdr.
 HOOK_MARKER = "llm-usage.tick"
-HOOK_COMMAND = ('[ -n "$HERDR_PANE_ID" ] && command -v herdr >/dev/null 2>&1 && '
-                '(herdr plugin action invoke llm-usage.tick >/dev/null 2>&1 &); exit 0')
+HOOK_EVENTS = ("PostToolUse", "Stop")
+HOOK_COMMAND = (
+    '[ -n "$HERDR_PANE_ID" ] && command -v herdr >/dev/null 2>&1 || exit 0; '
+    's="${TMPDIR:-/tmp}/herdr-llm-usage.tick"; n=$(date +%s); l=$(cat "$s" 2>/dev/null || echo 0); '
+    '[ $((n - l)) -lt 60 ] && exit 0; echo "$n" > "$s"; '
+    '(herdr plugin action invoke llm-usage.tick >/dev/null 2>&1 &); exit 0'
+)
 
 
 def claude_settings_path():
     return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "settings.json"
 
 
-def claude_hook_installed():
+def _claude_hooks():
     try:
-        settings_json = json.loads(claude_settings_path().read_text())
+        return json.loads(claude_settings_path().read_text()).get("hooks") or {}
     except (OSError, ValueError):
-        return False
-    return HOOK_MARKER in json.dumps((settings_json.get("hooks") or {}).get("Stop") or [])
+        return {}
+
+
+def claude_hook_installed():
+    hooks = _claude_hooks()
+    return any(HOOK_MARKER in json.dumps(hooks.get(event) or []) for event in ("PostToolUse", "Stop"))
+
+
+def claude_hook_current():
+    """Whether the installed hook is this version's (every event, current command)."""
+    hooks = _claude_hooks()
+    return all(any(h.get("command") == HOOK_COMMAND for group in hooks.get(event) or []
+                   for h in group.get("hooks") or [])
+               for event in HOOK_EVENTS)
 
 
 def set_claude_hook(enabled):
-    """Add or remove the Stop hook in Claude Code's settings.json, keeping everything else."""
+    """Add or remove the hooks in Claude Code's settings.json, keeping everything else."""
     path = claude_settings_path()
     try:
         text = path.read_text()
@@ -141,13 +170,17 @@ def set_claude_hook(enabled):
     except ValueError:
         raise RuntimeError("%s is not valid JSON; not touching it" % path)
     hooks = data.setdefault("hooks", {})
-    stop = [group for group in hooks.get("Stop") or [] if HOOK_MARKER not in json.dumps(group)]
-    if enabled:
-        stop.append({"hooks": [{"type": "command", "command": HOOK_COMMAND}]})
-    if stop:
-        hooks["Stop"] = stop
-    else:
-        hooks.pop("Stop", None)
+    for event in ("PostToolUse", "Stop"):
+        groups = [group for group in hooks.get(event) or [] if HOOK_MARKER not in json.dumps(group)]
+        if enabled and event in HOOK_EVENTS:
+            group = {"hooks": [{"type": "command", "command": HOOK_COMMAND}]}
+            if event == "PostToolUse":
+                group = dict({"matcher": "*"}, **group)
+            groups.append(group)
+        if groups:
+            hooks[event] = groups
+        else:
+            hooks.pop(event, None)
     if not hooks:
         data.pop("hooks")
     backup = path.with_name(path.name + ".llm-usage.bak")

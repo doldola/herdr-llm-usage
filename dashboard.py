@@ -64,6 +64,11 @@ class Panel:
     # ------------------------------------------------------------ data
 
     def load(self):
+        if claude_accounts.claude_hook_installed() and not claude_accounts.claude_hook_current():
+            try:  # an older plugin version installed it; bring it up to date
+                claude_accounts.set_claude_hook(True)
+            except (RuntimeError, OSError):
+                pass
         self.usage = llm_usage.cached(0)
         self.claude = []
         if claude_accounts.cswap_path():
@@ -346,9 +351,9 @@ SETTINGS = (
     ("threshold", "Switch at", lambda v: "%s%% used" % v["threshold"]),
     ("strategy", "Strategy", lambda v: STRATEGY_NAMES[v["strategy"]]),
     ("model", "Also watch model", lambda v: v.get("model") or DIM + "none (5h and week only)" + RESET),
-    ("claude_hook", "Check on Claude turns",
+    ("claude_hook", "Check while Claude works",
      lambda v: (GREEN + "on" if claude_accounts.claude_hook_installed() else DIM + "off") + RESET
-     + DIM + "  (Claude Code Stop hook; works even when herdr events do not)" + RESET),
+     + DIM + "  (Claude Code hook, at most once a minute; covers long turns)" + RESET),
 )
 
 ORIGINAL_TTY = None

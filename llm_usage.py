@@ -529,7 +529,12 @@ def main(argv):
         print(__doc__.strip())
         return 2
     try:
-        return commands[argv[0]](argv[1:])
+        code = commands[argv[0]](argv[1:])
+        if argv[0] in ("sidebar", "event") and code == 0:
+            import claude_accounts
+
+            claude_accounts.clear_note("error")  # an old failure is no longer the current state
+        return code
     except Exception as exc:
         if argv[0] in ("sidebar", "event", "codex-restart"):  # hooks: leave a trace for the panel
             import claude_accounts
