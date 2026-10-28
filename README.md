@@ -49,6 +49,10 @@ command = "llm-usage.open"
 description = "LLM usage"
 ```
 
+Keybindings and sidebar rows belong to the herdr client, so apply changes to
+them with **menu → reload config** in herdr (or detach and reattach);
+`herdr server reload-config` reloads only the server's settings.
+
 | Tab | Keys |
 |---|---|
 | all | `←` `→` or `Tab` / `1` `2` `3` tabs · `↑` `↓` select · `r` refresh · `q` close |
