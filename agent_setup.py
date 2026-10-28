@@ -141,7 +141,7 @@ def claude_setup(cwd, transcript=None):
         meta = frontmatter(skill_md)
         skills.append({"name": meta.get("name") or skill_md.parent.name, "description": meta.get("description", ""),
                        "source": "plugin:" + plugin, "path": str(skill_md)})
-    skills = _unique(skills, "name")
+    all_skills, skills = skills, _unique(skills, "name")  # the CLI uses the first of a name
 
     user_json = claude_user_json()
     mcp = [{"name": n, "scope": "user"} for n in (user_json.get("mcpServers") or {})]
@@ -166,6 +166,7 @@ def claude_setup(cwd, transcript=None):
         "rules": [file_entry(p) for p in _existing(rules)],
         "memory": [file_entry(p) for p in memory],
         "skills": skills,
+        "all_skills": all_skills,
         "mcp": mcp,
         "agents": sorted(set(agents)),
         "commands": sorted(set(commands)),
@@ -259,6 +260,7 @@ def codex_setup(cwd, transcript=None):
         "rules": [],
         "memory": [],
         "skills": _unique(skills, "name"),
+        "all_skills": skills,
         "mcp": [{"name": n, "scope": "config"} for n in (config.get("mcp_servers") or {})],
         "agents": [],
         "commands": named_files(home / "prompts"),

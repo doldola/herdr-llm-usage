@@ -24,6 +24,7 @@ import claude_accounts
 import codex_accounts
 import llm_usage
 import memory_tools
+import skill_tools
 
 TABS = ("Claude", "Codex", "Settings", "Agents")
 AGENTS_REFRESH = 5  # seconds between Agents tab refreshes while it is shown
@@ -566,7 +567,7 @@ def setup_view(a, targets=None, expanded=()):
         memory = setup.get("memory") or []
         lines.append("")
         targets[len(lines)] = "manage:memory"
-        lines.append(BOLD + "Memory" + RESET + DIM + "  %d files  (enter or M: tidy)" % len(memory) + RESET)
+        lines.append(BOLD + "Memory" + RESET + DIM + "  %d files  (enter or m: tidy)" % len(memory) + RESET)
         base = os.path.dirname(memory[0]["path"]) if memory else None
         shown = memory if "memory" in expanded else memory[:MEMORY_SHOWN]
         for entry in shown:
@@ -579,8 +580,10 @@ def setup_view(a, targets=None, expanded=()):
     skills = setup.get("skills") or []
     names = {k["name"] for k in skills}
     extra = [n for n in used_skills if n not in names]  # used but not found on disk (e.g. built in)
-    lines += ["", BOLD + "Skills" + RESET + DIM + "  %d available · %d used this session" % (
-        len(skills), len(used_skills)) + RESET]
+    lines.append("")
+    targets[len(lines)] = "manage:skills"
+    lines.append(BOLD + "Skills" + RESET + DIM + "  %d available · %d used this session  (enter or s: manage)" % (
+        len(skills), len(used_skills)) + RESET)
     ordered = sorted(skills, key=lambda k: (-used_skills.get(k["name"], 0), k["name"]))
     for skill in ordered if "skills" in expanded else ordered[:SKILLS_SHOWN]:
         count = used_skills.get(skill["name"], 0)
@@ -808,6 +811,12 @@ class Monitor:
         self.memory_cursor = 0
         self.memory_scroll = 0
         self.memory_shown = []  # entries listed under the current filter
+        self.skills_mode = False  # the skill manager is showing
+        self.skills_filter = 0
+        self.skills_cursor = 0
+        self.skills_scroll = 0
+        self.skills_shown = []
+        self.skills_report = None  # (time, pane, report): a project-wide scan is not redone every second
         self.view_scroll = 0
 
     def poll(self):
@@ -977,6 +986,104 @@ def memory_rows(monitor, width):
     return rows, chosen_row
 
 
+SKILLS_RESCAN = 10  # seconds a skill scan is reused
+
+
+def skills_report(monitor):
+    pane = (monitor.activity or {}).get("pane")
+    cached = monitor.skills_report
+    if cached and cached[1] == pane and time.time() - cached[0] < SKILLS_RESCAN:
+        return cached[2]
+    report = skill_tools.scan(monitor.activity)
+    monitor.skills_report = (time.time(), pane, report)
+    return report
+
+
+def skill_rows(monitor, width):
+    """The skill manager screen; returns (rows, row of the selected entry)."""
+    if not monitor.activity:
+        return [BOLD + "Skills" + RESET, "", "No agent selected."], 0
+    report = skills_report(monitor)
+    label, keep = skill_tools.FILTERS[monitor.skills_filter]
+    counts = [sum(1 for e in report["entries"] if f(e)) for _, f in skill_tools.FILTERS]
+    monitor.skills_shown = [e for e in report["entries"] if keep(e)]
+    monitor.skills_cursor = max(0, min(monitor.skills_cursor, len(monitor.skills_shown) - 1))
+    scope = ("use counted over %d session(s) of this project in the last %d days"
+             % (report["sessions"], skill_tools.UNUSED_DAYS)) if report["agent"] == "claude" else "use counted in this session"
+    rows = wrap(BOLD + "Skills" + RESET + DIM + "  for %s · %s" % (tidy(monitor.activity.get("cwd") or ""), scope) + RESET, width)
+    tabs = "  ".join((BOLD + "[%s %d]" + RESET if i == monitor.skills_filter else DIM + " %s %d " + RESET) % (name, n)
+                     for i, ((name, _), n) in enumerate(zip(skill_tools.FILTERS, counts)))
+    rows += wrap(tabs, width) + [""]
+    chosen_row = len(rows)
+    for i, entry in enumerate(monitor.skills_shown):
+        if not entry["enabled"]:
+            mark = DIM + "×" + RESET
+        elif entry["uses"] or entry["session_uses"]:
+            mark = GREEN + "●" + RESET
+        else:
+            mark = DIM + "○" + RESET
+        flags = []
+        if not entry["enabled"]:
+            flags.append(DIM + "disabled" + RESET)
+        if entry["duplicate"]:
+            flags.append(RED + "same name elsewhere" + RESET)
+        if entry["enabled"] and not entry["description"]:
+            flags.append(YELLOW + "no description" + RESET)
+        if entry["uses"] or entry["session_uses"]:
+            flags.append(GREEN + "×%d" % max(entry["uses"], entry["session_uses"]) + RESET)
+        pointer = BOLD + "›" + RESET if i == monitor.skills_cursor else " "
+        if i == monitor.skills_cursor:
+            chosen_row = len(rows)
+        rows += wrap("%s %s %s  %s%s" % (pointer, mark, BOLD + entry["name"] + RESET,
+                                         DIM + "%s · %d lines" % (entry["source"], entry["lines"]) + RESET,
+                                         ("  " + "  ".join(flags)) if flags else ""), width)
+        if entry["description"]:
+            rows += wrap("     " + DIM + entry["description"][:200] + RESET, width)
+    if not monitor.skills_shown:
+        rows.append(DIM + "  nothing under this filter" + RESET)
+    return rows, chosen_row
+
+
+def handle_skill_key(monitor, key):
+    entry = monitor.skills_shown[monitor.skills_cursor] if monitor.skills_shown else None
+    try:
+        if key in (b"\x1b", b"q", b"h", b"\x1b[D", b"\x7f"):
+            monitor.skills_mode = False
+        elif key in (b"j", b"\x1b[B"):
+            monitor.skills_cursor += 1
+        elif key in (b"k", b"\x1b[A"):
+            monitor.skills_cursor = max(0, monitor.skills_cursor - 1)
+        elif key in (b"\t", b"\x1b[C", b"l"):
+            monitor.skills_filter = (monitor.skills_filter + 1) % len(skill_tools.FILTERS)
+            monitor.skills_cursor = 0
+        elif key == b"\x1b[Z":
+            monitor.skills_filter = (monitor.skills_filter - 1) % len(skill_tools.FILTERS)
+            monitor.skills_cursor = 0
+        elif key in (b"\r", b"\n") and entry:
+            monitor.viewing, monitor.view_scroll = entry["path"], 0
+        elif key == b"d" and entry:
+            if not entry["enabled"]:
+                monitor.message = "%s is already disabled; e enables it" % entry["name"]
+            else:
+                target = skill_tools.disable(entry)
+                monitor.message = "Disabled %s (moved to %s)  (u undoes)%s" % (
+                    entry["name"], tidy(str(target.parent)),
+                    "  · it is in the project, so git sees the move" if entry["source"] == "project" else "")
+                monitor.skills_report = None
+        elif key == b"e" and entry:
+            if entry["enabled"]:
+                monitor.message = "%s is already enabled" % entry["name"]
+            else:
+                skill_tools.enable(entry)
+                monitor.message = "Enabled %s  (u undoes)" % entry["name"]
+                monitor.skills_report = None
+        elif key == b"u":
+            monitor.message = skill_tools.undo() or "Nothing to undo"
+            monitor.skills_report = None
+    except (OSError, ValueError) as exc:
+        monitor.message = RED + str(exc) + RESET
+
+
 def handle_memory_key(monitor, key):
     folder = memory_dir_of(monitor.activity)
     entry = monitor.memory_shown[monitor.memory_cursor] if monitor.memory_shown else None
@@ -1038,6 +1145,17 @@ def _run_monitor():
                 out = rows[monitor.view_scroll:monitor.view_scroll + room]
                 hint = "↑↓ space b g G · esc back  %d/%d" % (
                     min(len(rows), monitor.view_scroll + room), len(rows))
+            elif monitor.skills_mode:
+                rows, chosen_row = skill_rows(monitor, size.columns)
+                if monitor.message:
+                    rows += [""] + wrap(monitor.message, size.columns)
+                if chosen_row < monitor.skills_scroll:
+                    monitor.skills_scroll = chosen_row
+                elif chosen_row >= monitor.skills_scroll + room:
+                    monitor.skills_scroll = chosen_row - room + 2
+                monitor.skills_scroll = max(0, min(monitor.skills_scroll, len(rows) - room))
+                out = rows[monitor.skills_scroll:monitor.skills_scroll + room]
+                hint = "↑↓ · enter read · d disable · e enable · u undo · tab filter · esc back"
             elif monitor.memory_mode:
                 rows, chosen_row = memory_rows(monitor, size.columns)
                 if monitor.message:
@@ -1076,7 +1194,7 @@ def _run_monitor():
                     monitor.scroll = chosen_row - room + 1
                 monitor.scroll = max(0, min(monitor.scroll, len(rows) - room))
                 out = rows[monitor.scroll:monitor.scroll + room]
-                hint = "↑↓ file · enter read%s · M memory · f follow %s · q close" % (
+                hint = "↑↓ file · enter read%s · s skills · m memory · f follow %s · q close" % (
                     " · c fold" if monitor.expanded else "", "on" if monitor.follow else "off")
             out.append(DIM + hint + RESET)
             sys.stdout.write("\033[H\033[2J" + "\r\n".join(fit(line, size.columns) for line in out))
@@ -1102,10 +1220,16 @@ def _run_monitor():
                 elif key == b"G":
                     monitor.view_scroll = 10 ** 9
                 continue
+            if monitor.skills_mode:
+                handle_skill_key(monitor, key)
+                continue
             if monitor.memory_mode:
                 handle_memory_key(monitor, key)
                 continue
-            if key == b"M":
+            if key in (b"S", b"s"):  # Shift+S arrives as plain s from a Korean input method
+                monitor.skills_mode, monitor.skills_cursor, monitor.skills_scroll = True, 0, 0
+                continue
+            if key in (b"M", b"m"):
                 monitor.memory_mode, monitor.memory_cursor, monitor.memory_scroll = True, 0, 0
                 continue
             if key in (b"q", b"Q", b"\x03"):
@@ -1129,6 +1253,8 @@ def _run_monitor():
                     target = monitor.targets[files[min(monitor.selected, len(files) - 1)]]
                     if target.startswith("expand:"):
                         monitor.expanded ^= {target.split(":", 1)[1]}
+                    elif target == "manage:skills":
+                        monitor.skills_mode, monitor.skills_cursor, monitor.skills_scroll = True, 0, 0
                     elif target == "manage:memory":
                         monitor.memory_mode, monitor.memory_cursor, monitor.memory_scroll = True, 0, 0
                     else:

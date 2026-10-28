@@ -135,8 +135,8 @@ select in herdr's sidebar, within a second of selecting it:
 | Section | Claude | Codex |
 |---|---|---|
 | Instructions | `CLAUDE.md` chain, `.claude/rules` | `AGENTS.md` chain |
-| Memory | the project's memory files (`M` tidies them) | — |
-| Skills | user, project and enabled-plugin skills; used ones marked `●` and counted | `~/.codex/skills`, project skills |
+| Memory | the project's memory files (`m` tidies them) | — |
+| Skills | user, project and enabled-plugin skills; used ones marked `●` and counted (`s` manages them) | `~/.codex/skills`, project skills (`s`) |
 | MCP servers | user, local and project (`.mcp.json`) servers; used ones marked | `config.toml` servers |
 | Also | subagents, commands, plugins, hooks, permission mode and rule counts | prompts, model, reasoning effort, approval, sandbox |
 | This session | running tool, tool counts, markdown files read, model, context | same |
@@ -153,7 +153,7 @@ select in herdr's sidebar, within a second of selecting it:
 
 ### Tidying memory
 
-On the monitor, `M` (or `enter` on the Memory heading) opens the memory of the
+On the monitor, `m` (or `enter` on the Memory heading) opens the memory of the
 selected Claude agent's project. Every Claude session in that project folder
 shares it. `tab` filters to files that need attention:
 
@@ -175,6 +175,33 @@ Links in `MEMORY.md` to files that no longer exist are listed above the files.
 
 Nothing is deleted. Undo puts back only the lines and files a change touched,
 so index lines other sessions wrote in the meantime are kept.
+
+### Managing skills
+
+`s` (or `enter` on the Skills heading) lists every skill the selected agent can
+use, including ones you disabled. For Claude, use is counted over the
+project's sessions of the last 30 days; for Codex, over the current session.
+
+| Filter | Finds |
+|---|---|
+| unused 30d | skills no session used |
+| duplicates | the same skill name in more than one place (the CLI uses one) |
+| no description | skills without a description, which the agent cannot judge when to use |
+| disabled | skills you turned off |
+
+| Key | Does |
+|---|---|
+| `enter` | read the `SKILL.md` |
+| `d` | disable: move the skill folder to `skills-disabled/` beside its skills folder, where the CLI does not look |
+| `e` | enable a disabled skill again |
+| `u` | undo the last change (repeatable) |
+
+Plugin skills are managed by their plugin: turn the plugin off with `/plugin`
+in Claude Code. Disabling a project skill moves a file in the project, so git
+sees the change.
+
+Shortcuts also work with a Korean (2-set) input method: Hangul letters are read
+as the key in the same place.
 
 Setup comes from the files each CLI loads for the session's folder, by their
 documented locations: it says what is configured, not that the CLI read it.
