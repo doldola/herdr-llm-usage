@@ -135,6 +135,21 @@ cannot be read shows why, and the rest of the plugin is unaffected.
 Instruction files are the ones the CLI's lookup rules load for the pane's
 folder, not an observation that they were read.
 
+### Monitor pane
+
+For a view that stays open beside your work instead of a popup:
+
+```bash
+herdr plugin action invoke llm-usage.monitor
+```
+
+It opens to the right of the focused pane (move or resize it like any pane)
+and refreshes every 3 seconds: usage for the signed-in Claude and Codex
+accounts at the top, then every agent pane with its running tool, context,
+tool counts, skills and markdown files. `↑` `↓` select, `enter` shows a pane
+in full, `esc` goes back, `q` closes it. While it is open it also keeps the
+sidebar tokens below current.
+
 While monitoring is on, the sidebar also gets:
 
 | Token | Example |

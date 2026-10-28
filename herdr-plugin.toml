@@ -1,6 +1,6 @@
 id = "llm-usage"
 name = "LLM Usage"
-version = "0.7.0"
+version = "0.8.0"
 min_herdr_version = "0.7.5"
 description = "LLM accounts, usage and agent activity in one panel: Claude and Codex usage, account switching, auto-switch, tools and skills per pane"
 platforms = ["linux", "macos"]
@@ -10,6 +10,12 @@ id = "open"
 title = "LLM usage and accounts"
 contexts = ["workspace"]
 command = ["python3", "llm_usage.py", "open"]
+
+[[actions]]
+id = "monitor"
+title = "Agents monitor (pane beside your work)"
+contexts = ["workspace"]
+command = ["python3", "llm_usage.py", "open-monitor"]
 
 [[actions]]
 id = "refresh"
@@ -47,3 +53,9 @@ placement = "popup"
 width = "85%"
 height = "85%"
 command = ["python3", "llm_usage.py", "dashboard"]
+
+[[panes]]
+id = "monitor"
+title = "Agents"
+placement = "split"
+command = ["python3", "llm_usage.py", "monitor"]

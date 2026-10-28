@@ -14,6 +14,8 @@ Commands:
   sidebar           report usage tokens onto agent panes (herdr event hook)
   event             sidebar plus one Claude auto-switch check (herdr event hook)
   codex-restart     resume Codex panes on the current login (herdr action)
+  monitor           the agents monitor pane (herdr pane entrypoint)
+  open-monitor      open the monitor beside the focused pane (herdr action)
 """
 
 import base64
@@ -526,6 +528,22 @@ def cmd_open(_args):
     return opened.returncode
 
 
+def cmd_monitor(_args):
+    import dashboard
+
+    return dashboard.run_monitor()
+
+
+def cmd_open_monitor(_args):
+    """Open the monitor as a pane beside the focused one; it stays until closed."""
+    plugin = os.environ.get("HERDR_PLUGIN_ID") or "llm-usage"
+    opened = herdr("plugin", "pane", "open", "--plugin", plugin, "--entrypoint", "monitor",
+                   "--placement", "split", "--direction", "right", "--no-focus")
+    if opened.returncode != 0:
+        print(opened.stderr.strip(), file=sys.stderr)
+    return opened.returncode
+
+
 def cmd_event(args):
     import claude_accounts
 
@@ -553,7 +571,8 @@ def cmd_codex_restart(_args):
 
 def main(argv):
     commands = {"status": cmd_status, "dashboard": cmd_dashboard, "sidebar": cmd_sidebar, "open": cmd_open,
-                "event": cmd_event, "codex-restart": cmd_codex_restart}
+                "event": cmd_event, "codex-restart": cmd_codex_restart,
+                "monitor": cmd_monitor, "open-monitor": cmd_open_monitor}
     if not argv or argv[0] not in commands:
         print(__doc__.strip())
         return 2

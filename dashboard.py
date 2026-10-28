@@ -7,6 +7,7 @@ holds the Claude auto-switch options, written to the plugin's config.json.
 
 import json
 import os
+import re
 import select
 import shutil
 import subprocess
@@ -15,6 +16,7 @@ import termios
 import threading
 import time
 import tty
+import unicodedata
 
 import agent_activity
 import claude_accounts
@@ -29,6 +31,28 @@ STRATEGY_NAMES = {"best": "most quota left", "soonest-reset": "weekly reset soon
 
 DIM, BOLD, RESET = "\033[2m", "\033[1m", "\033[0m"
 GREEN, RED, YELLOW, BLUE = "\033[32m", "\033[31m", "\033[33m", "\033[34m"
+
+
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def fit(line, width):
+    """Cut a line to `width` visible columns, keeping its colors (wide characters count as two)."""
+    out, used, i = [], 0, 0
+    while i < len(line):
+        match = ANSI.match(line, i)
+        if match:
+            out.append(match.group(0))
+            i = match.end()
+            continue
+        cell = 2 if unicodedata.east_asian_width(line[i]) in ("W", "F") else 1
+        if used + cell > width:
+            out.append(RESET)
+            break
+        out.append(line[i])
+        used += cell
+        i += 1
+    return "".join(out)
 
 
 def bar(used, width=18):
@@ -149,7 +173,7 @@ class Panel:
                 "←→ tabs · ↑↓ select · enter details · r refresh · q close"),
         }[self.tab]
         out.append(DIM + keys[:width] + RESET)
-        sys.stdout.write("\033[H\033[2J" + "\r\n".join(out))
+        sys.stdout.write("\033[H\033[2J" + "\r\n".join(fit(line, width) for line in out))
         sys.stdout.flush()
 
     def pointer(self, i):
@@ -242,16 +266,15 @@ class Panel:
                 a["status"], DIM + "○ " + str(a["status"] or "")) + RESET
             place = os.path.basename(a["cwd"] or "") or "?"
             now = ("  now " + BOLD + agent_activity.current_tool(a) + RESET) if agent_activity.current_tool(a) else ""
-            lines.append("%s %s%s %s%s  %s  %s%s" % (self.pointer(i), BOLD, a["pane"], a["agent"], RESET, status,
-                                                    DIM + place + RESET, now))
+            ctx = agent_activity.context_label(a)
+            lines.append("%s %s%s %s%s  %s%s%s  %s" % (self.pointer(i), BOLD, a["pane"], a["agent"], RESET, status,
+                                                      ("  " + ctx) if ctx else "", now, DIM + place + RESET))
             if a["error"]:
                 lines.append("      " + DIM + a["error"] + RESET)
                 continue
             tools = sorted(a["tools"].items(), key=lambda kv: -kv[1])
             summary = " · ".join("%s %d" % (short_tool(n), c) for n, c in tools[:5])
-            ctx = agent_activity.context_label(a)
-            lines.append("      tools %d  %s%s" % (sum(a["tools"].values()), DIM + summary + RESET,
-                                                   ("   " + ctx) if ctx else ""))
+            lines.append("      tools %d  %s" % (sum(a["tools"].values()), DIM + summary + RESET))
             extra = []
             if a["skills"]:
                 extra.append("skills " + ", ".join(a["skills"][:3]))
@@ -531,3 +554,78 @@ def run():
         sys.stdout.write("\033[?25h")
         sys.stdout.flush()
         termios.tcsetattr(fd, termios.TCSADRAIN, ORIGINAL_TTY)
+
+
+# ---------------------------------------------------------------- monitor pane
+
+MONITOR_REFRESH = 3  # seconds
+
+
+def usage_header(usage):
+    """One line per signed-in Claude/Codex account: 5-hour and weekly use with reset countdowns."""
+    lines = []
+    for provider in (usage or {}).get("providers", []):
+        if provider["provider"] not in ("claude", "codex"):
+            continue
+        parts = []
+        for window in provider["windows"]:
+            if window["label"] not in ("5h", "week"):
+                continue
+            used = window["used"]
+            color = RED if used >= 90 else YELLOW if used >= 70 else GREEN
+            reset = llm_usage.until(window.get("resets_at")).replace(" ", "")
+            parts.append("%s %s%d%%%s%s" % (window["label"], color + BOLD, round(used), RESET,
+                                            DIM + " ↻" + reset + RESET if reset else ""))
+        status = "   ".join(parts) or DIM + (provider.get("error") or "no usage") + RESET
+        lines.append("%s%-6s%s %s  %s" % (BOLD, provider["name"], RESET, status, DIM + (provider.get("account") or "") + RESET))
+    return lines
+
+
+def run_monitor():
+    """A pane that stays open beside your work and keeps the Agents view current."""
+    fd = sys.stdin.fileno()
+    saved = termios.tcgetattr(fd)
+    panel = Panel()
+    panel.tab = 3
+    usage = None
+    try:
+        tty.setcbreak(fd)
+        sys.stdout.write("\033[?25l")
+        while True:
+            if panel.agents is None or time.time() - panel.agents_at >= MONITOR_REFRESH:
+                panel.load_agents()
+                try:
+                    usage = llm_usage.cached(llm_usage.CACHE_TTL)
+                except Exception as exc:  # keep the pane alive; show why the header is empty
+                    panel.message = RED + "usage: %s" % exc + RESET
+            size = shutil.get_terminal_size()
+            rows = panel.rows()
+            panel.cursor[3] = min(panel.cursor[3], max(0, len(rows) - 1))
+            out = [BOLD + "Agents" + RESET + DIM + "   " + time.strftime("%H:%M:%S") + RESET]
+            out += usage_header(usage) + [""] + panel.draw_agents() + ["", panel.message]
+            hint = "esc back · q close" if panel.detail else "↑↓ select · enter details · r refresh · q close"
+            out = out[:max(1, size.lines - 1)]
+            out.append(DIM + hint + RESET)
+            sys.stdout.write("\033[H\033[2J" + "\r\n".join(fit(line, size.columns) for line in out))
+            sys.stdout.flush()
+            if not select.select([sys.stdin], [], [], MONITOR_REFRESH)[0]:
+                continue
+            key = os.read(fd, 3)
+            panel.message = ""
+            if panel.detail and key in (b"\x1b", b"\x7f", b"\x1b[D", b"h"):
+                panel.detail = None
+            elif key in (b"q", b"Q", b"\x03"):
+                return 0
+            elif key in (b"\x1b[A", b"k"):
+                panel.cursor[3] = max(0, panel.cursor[3] - 1)
+            elif key in (b"\x1b[B", b"j"):
+                panel.cursor[3] = min(len(panel.rows()) - 1, panel.cursor[3] + 1)
+            elif key == b"r":
+                panel.agents = None
+            else:
+                panel.act(key, fd)
+                panel.agents_at = 0  # show the change at once
+    finally:
+        sys.stdout.write("\033[?25h")
+        sys.stdout.flush()
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
