@@ -144,7 +144,7 @@ select in herdr's sidebar, within a second of selecting it:
 - `↑` `↓` choose a file: an instruction file, rule, memory file, a skill's
   `SKILL.md` or a markdown file the session read; `enter` opens it in a reader
   (`↑` `↓`, `space` / `b` page, `g` / `G`, `esc` back). Long sections fold into
-  a "… more" line that `enter` unfolds.
+  a "… more" line that `enter` unfolds; `c` folds them back.
 - Lines wrap to the pane's width, so a narrow monitor still shows everything.
 - When the selected agent is in another tab, the monitor moves into that tab,
   to its right; `f` turns that off. Selecting the monitor itself keeps the

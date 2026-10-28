@@ -781,6 +781,7 @@ class Monitor:
         self.selected = 0  # position in the sorted target lines
         self.viewing = None  # path of the file open in the viewer
         self.expanded = set()  # sections unfolded past their first entries
+        self.select_target = None  # a target to put the cursor on once the lines are rebuilt
         self.view_scroll = 0
 
     def poll(self):
@@ -925,6 +926,10 @@ def _run_monitor():
                 except Exception as exc:  # one odd session must not take the pane down
                     body = [RED + "Could not show this agent: %s: %s" % (type(exc).__name__, exc) + RESET]
                 files = sorted(monitor.targets)
+                if monitor.select_target:  # e.g. the fold line of a section just folded
+                    monitor.selected = next((i for i, line in enumerate(files)
+                                             if monitor.targets[line] == monitor.select_target), monitor.selected)
+                    monitor.select_target = None
                 monitor.selected = max(0, min(monitor.selected, len(files) - 1))
                 chosen = files[monitor.selected] if files else None
                 rows, chosen_row = [], 0
@@ -942,7 +947,8 @@ def _run_monitor():
                     monitor.scroll = chosen_row - room + 1
                 monitor.scroll = max(0, min(monitor.scroll, len(rows) - room))
                 out = rows[monitor.scroll:monitor.scroll + room]
-                hint = "↑↓ file · enter read · f follow %s · q close" % ("on" if monitor.follow else "off")
+                hint = "↑↓ file · enter read%s · f follow %s · q close" % (
+                    " · c fold" if monitor.expanded else "", "on" if monitor.follow else "off")
             out.append(DIM + hint + RESET)
             sys.stdout.write("\033[H\033[2J" + "\r\n".join(fit(line, size.columns) for line in out))
             sys.stdout.flush()
@@ -990,6 +996,11 @@ def _run_monitor():
                         monitor.expanded ^= {target.split(":", 1)[1]}
                     else:
                         monitor.viewing, monitor.view_scroll = target, 0
+            elif key == b"c" and monitor.expanded:
+                # fold everything back and leave the cursor on the first folded section's "more" line
+                first = "skills" if "skills" in monitor.expanded else sorted(monitor.expanded)[0]
+                monitor.expanded.clear()
+                monitor.select_target = "expand:" + first
             elif key == b"f":
                 monitor.follow = not monitor.follow
             elif key == b"r":
