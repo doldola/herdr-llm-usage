@@ -490,6 +490,14 @@ def cached_setup(activity):
     return setup
 
 
+def fold_line(targets, index, section, hidden, expanded):
+    """The selectable line that unfolds a long section, or folds it back."""
+    if hidden <= 0:
+        return []
+    targets[index] = "expand:" + section
+    return ["  " + DIM + ("▴ show fewer" if expanded else "… %d more (enter to show)" % hidden) + RESET]
+
+
 def tidy(path):
     home = os.path.expanduser("~")
     return path.replace(home, "~", 1) if path else path
@@ -501,13 +509,17 @@ def file_line(entry, base=None):
     return "  %-44s %s" % (path, DIM + "%d lines%s" % (entry["lines"], when) + RESET)
 
 
-def setup_view(a, targets=None):
+SKILLS_SHOWN = 16  # skills listed before the rest fold into a "more" line
+MEMORY_SHOWN = 12
+
+
+def setup_view(a, targets=None, expanded=()):
     """What a session is set up with, marked with what it has used so far.
 
     When `targets` is a dict, the index of every line that names a file is
     mapped to that file's path, so a caller can let the user open it.
     """
-    targets = {} if targets is None else targets
+    targets = {} if targets is None else targets  # a value of "expand:<section>" folds or unfolds it
     status = {"working": YELLOW + "◐ working", "blocked": RED + "! blocked", "done": GREEN + "✓ done"}.get(
         a.get("status"), DIM + "○ " + str(a.get("status") or "")) + RESET
     ctx = agent_activity.context_label(a)
@@ -535,11 +547,11 @@ def setup_view(a, targets=None):
         memory = setup.get("memory") or []
         lines += ["", BOLD + "Memory" + RESET + DIM + "  %d files" % len(memory) + RESET]
         base = os.path.dirname(memory[0]["path"]) if memory else None
-        for entry in memory[:12]:
+        shown = memory if "memory" in expanded else memory[:MEMORY_SHOWN]
+        for entry in shown:
             targets[len(lines)] = entry["path"]
             lines.append(file_line(entry, base))
-        if len(memory) > 12:
-            lines.append("  " + DIM + "… %d more" % (len(memory) - 12) + RESET)
+        lines += fold_line(targets, len(lines), "memory", len(memory) - MEMORY_SHOWN, "memory" in expanded)
         if not memory:
             lines.append("  " + DIM + "none for this project" + RESET)
 
@@ -549,7 +561,7 @@ def setup_view(a, targets=None):
     lines += ["", BOLD + "Skills" + RESET + DIM + "  %d available · %d used this session" % (
         len(skills), len(used_skills)) + RESET]
     ordered = sorted(skills, key=lambda k: (-used_skills.get(k["name"], 0), k["name"]))
-    for skill in ordered[:16]:
+    for skill in ordered if "skills" in expanded else ordered[:SKILLS_SHOWN]:
         count = used_skills.get(skill["name"], 0)
         mark = GREEN + "●" + RESET if count else DIM + "○" + RESET
         if skill.get("path"):
@@ -557,8 +569,7 @@ def setup_view(a, targets=None):
         lines.append("  %s %-22s %s %s%s" % (mark, skill["name"][:22], DIM + "%-16s" % skill["source"][:16] + RESET,
                                                  DIM + skill["description"][:60] + RESET,
                                                  ("  " + GREEN + "×%d" % count + RESET) if count else ""))
-    if len(ordered) > 16:
-        lines.append("  " + DIM + "… %d more" % (len(ordered) - 16) + RESET)
+    lines += fold_line(targets, len(lines), "skills", len(ordered) - SKILLS_SHOWN, "skills" in expanded)
     lines += ["  %s %s  ×%d" % (GREEN + "●" + RESET, n, used_skills[n]) for n in extra]
 
     mcp = setup.get("mcp") or []
@@ -769,6 +780,7 @@ class Monitor:
         self.targets = {}  # line index -> file path, for the lines that name a file
         self.selected = 0  # position in the sorted target lines
         self.viewing = None  # path of the file open in the viewer
+        self.expanded = set()  # sections unfolded past their first entries
         self.view_scroll = 0
 
     def poll(self):
@@ -822,7 +834,7 @@ class Monitor:
             return ["No Claude or Codex agents."]
         a = self.shown
         targets = {}
-        view = setup_view(self.activity, targets) if self.activity else [a.get("pane_id") or "?"]
+        view = setup_view(self.activity, targets, self.expanded) if self.activity else [a.get("pane_id") or "?"]
         provider = "Claude" if a.get("agent") == "claude" else "Codex"
         usage = [line for line in usage_header(self.usage) if line.startswith(BOLD + provider)]
         shift = len(usage)  # the usage lines go in after the first line
@@ -973,8 +985,11 @@ def _run_monitor():
                     next_poll = 0
                 elif monitor.targets:
                     files = sorted(monitor.targets)
-                    monitor.viewing = monitor.targets[files[min(monitor.selected, len(files) - 1)]]
-                    monitor.view_scroll = 0
+                    target = monitor.targets[files[min(monitor.selected, len(files) - 1)]]
+                    if target.startswith("expand:"):
+                        monitor.expanded ^= {target.split(":", 1)[1]}
+                    else:
+                        monitor.viewing, monitor.view_scroll = target, 0
             elif key == b"f":
                 monitor.follow = not monitor.follow
             elif key == b"r":
