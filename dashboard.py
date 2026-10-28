@@ -806,7 +806,12 @@ def _run_monitor():
             key = os.read(fd, 3)
             monitor.message = ""
             if key in (b"q", b"Q", b"\x03"):
-                claude_accounts.note("monitor", "closed with q")
+                # Hand focus to the agent first: a client still focused on this pane after it
+                # closes sends its next keybinding to a pane that no longer exists.
+                target = (monitor.shown or {}).get("pane_id")
+                if target:
+                    llm_usage.herdr("agent", "focus", target)
+                claude_accounts.note("monitor", "closed with q, focus back to %s" % (target or "?"))
                 return 0
             if key in (b"j", b"\x1b[B"):
                 monitor.scroll += 1
