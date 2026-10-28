@@ -115,6 +115,43 @@ Claude sessions use it; running ones pick it up after `/hooks` or a restart.
 The Settings tab also shows when the sidebar and the auto-switch check last ran
 and what they did; `c` runs the check at once.
 
+## Agents
+
+Turn on "Agent monitoring" in the Settings tab (it is off by default). The
+Agents tab then lists every Claude and Codex pane with the tool it is running
+now, tool counts, skills used, markdown files read and context use; `enter`
+shows one pane in full, adding MCP servers, the instruction files its CLI
+loads for that folder (`CLAUDE.md`, `.claude/rules`, `AGENTS.md`) and Claude's
+memory files for the project.
+
+It reads the session transcripts the CLIs keep on this machine
+(`~/.claude/projects/…/<session>.jsonl`, `~/.codex/sessions/…/rollout-…<session>.jsonl`),
+using the session id herdr reports for each pane, so install the integrations:
+`herdr integration install claude` and `herdr integration install codex`.
+Nothing leaves the machine. Transcripts are read incrementally, so refreshing
+only parses what was appended. Their format is not a public API; a pane that
+cannot be read shows why, and the rest of the plugin is unaffected.
+
+Instruction files are the ones the CLI's lookup rules load for the pane's
+folder, not an observation that they were read.
+
+While monitoring is on, the sidebar also gets:
+
+| Token | Example |
+|---|---|
+| `$tool` | `Bash`, `Edit`, `notion:notion-search` (only while the agent works) |
+| `$skill` | `docx` (the last skill used) |
+| `$ctx` | `ctx 24%` (Codex) or `ctx 92k` (Claude, tokens in the last request) |
+
+```toml
+[ui.sidebar.agents]
+rows = [
+  ["state_icon", "agent", "state_text", { token = "$tool", fg = "#f9e2af", dim = false }],
+  [{ token = "$skill", fg = "#cba6f7", dim = false }, { token = "$ctx", dim = false }],
+  ["workspace", "tab"],
+]
+```
+
 ## Sidebar
 
 Every Claude and Codex agent pane gets these tokens, refreshed on agent

@@ -22,7 +22,8 @@ PREFER_MARGIN = 6 * 3600  # soonest-reset: how much earlier a reset must be to m
 # uv, pipx and Homebrew put tools here, and herdr's server may not have them on PATH.
 EXTRA_PATHS = ("~/.local/bin", "~/.cargo/bin", "/opt/homebrew/bin", "/usr/local/bin")
 
-DEFAULT_SETTINGS = {"auto_switch": False, "threshold": 90, "strategy": "best", "model": None}
+DEFAULT_SETTINGS = {"auto_switch": False, "threshold": 90, "strategy": "best", "model": None,
+                    "agent_monitor": False}
 STRATEGIES = ("best", "soonest-reset")
 
 

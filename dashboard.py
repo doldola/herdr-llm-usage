@@ -5,6 +5,7 @@ between them; without saved accounts they show the signed-in one. Settings
 holds the Claude auto-switch options, written to the plugin's config.json.
 """
 
+import json
 import os
 import select
 import shutil
@@ -15,11 +16,13 @@ import threading
 import time
 import tty
 
+import agent_activity
 import claude_accounts
 import codex_accounts
 import llm_usage
 
-TABS = ("Claude", "Codex", "Settings")
+TABS = ("Claude", "Codex", "Settings", "Agents")
+AGENTS_REFRESH = 5  # seconds between Agents tab refreshes while it is shown
 REFRESH_EVERY = 60
 THRESHOLDS = (70, 75, 80, 85, 90, 95)
 STRATEGY_NAMES = {"best": "most quota left", "soonest-reset": "weekly reset soonest first"}
@@ -54,12 +57,16 @@ def window_line(label, used, resets_at):
 class Panel:
     def __init__(self):
         self.tab = 0
-        self.cursor = [0, 0, 0]
+        self.cursor = [0, 0, 0, 0]
         self.message = ""
         self.claude = None  # list of cswap rows, or None while loading
         self.codex = None  # list of saved Codex accounts with usage
         self.usage = None  # llm_usage data: signed-in accounts, other logins
         self.loaded_at = 0.0
+        self.agents = None  # activity per agent pane, or None until the Agents tab loads it
+        self.agents_at = 0.0
+        self.detail = None  # pane id shown in full on the Agents tab
+        self.sidebar_busy = False
 
     # ------------------------------------------------------------ data
 
@@ -86,6 +93,29 @@ class Panel:
         self.codex_unsaved = bool(live_id) and live_id not in [a["id"] for a in self.codex]
         self.loaded_at = time.time()
 
+    def load_agents(self):
+        """Activity for every Claude and Codex pane; also pushes the sidebar's activity tokens."""
+        self.agents_at = time.time()
+        if not claude_accounts.settings()["agent_monitor"]:
+            self.agents = []
+            return
+        listing = llm_usage.herdr("agent", "list")
+        try:
+            panes = (json.loads(listing.stdout).get("result") or {}).get("agents") or []
+        except ValueError:
+            panes = []
+        self.agents = [agent_activity.pane_activity(a) for a in panes if a.get("agent") in ("claude", "codex")]
+        if not self.sidebar_busy:
+            self.sidebar_busy = True
+
+            def push():
+                try:
+                    llm_usage.cmd_sidebar([])
+                finally:
+                    self.sidebar_busy = False
+
+            threading.Thread(target=push, daemon=True).start()
+
     def provider(self, name):
         return next((p for p in (self.usage or {}).get("providers", []) if p["provider"] == name), None)
 
@@ -99,6 +129,8 @@ class Panel:
             return self.claude or []
         if self.tab == 1:
             return self.codex or []
+        if self.tab == 3:
+            return self.agents or []
         return SETTINGS
 
     def draw(self):
@@ -107,12 +139,14 @@ class Panel:
                          for i, name in enumerate(TABS))
         out = [BOLD + "LLM usage" + RESET + "   " + tabs, ""]
         if self.usage is not None and self.claude is not None:  # nothing to show while loading
-            out += (self.draw_claude, self.draw_codex, self.draw_settings)[self.tab]()
+            out += (self.draw_claude, self.draw_codex, self.draw_settings, self.draw_agents)[self.tab]()
         out += ["", self.message, ""]
         keys = {
             0: "←→ tabs · ↑↓ select · enter switch · b switch by strategy · s save login · x remove · r refresh · q close",
             1: "←→ tabs · ↑↓ select · enter switch · b most quota · s save login · x remove · r refresh · q close",
             2: "←→ tabs · ↑↓ select · enter change · +/- threshold · c check now · q close",
+            3: ("esc back · r refresh · q close" if self.detail else
+                "←→ tabs · ↑↓ select · enter details · r refresh · q close"),
         }[self.tab]
         out.append(DIM + keys[:width] + RESET)
         sys.stdout.write("\033[H\033[2J" + "\r\n".join(out))
@@ -185,6 +219,74 @@ class Panel:
         return [line for line in llm_usage.render({"providers": [provider], "fetched_at": time.time()})
                 .split("\n")[:-1] if line]
 
+    def draw_agents(self):
+        if not claude_accounts.settings()["agent_monitor"]:
+            return ["Agent monitoring is off.", "",
+                    "When on, this tab and the sidebar show what each Claude and Codex pane is using:",
+                    "the running tool, tool counts, skills, markdown files read, instruction files,",
+                    "memory and context. It reads the session transcripts the CLIs keep on this",
+                    "machine; nothing leaves it.", "",
+                    "Press enter to turn it on (or use the Settings tab)."]
+        if self.agents is None:
+            return [DIM + "loading…" + RESET]
+        if not self.agents:
+            return ["No Claude or Codex panes."]
+        if self.detail:
+            activity = next((a for a in self.agents if a["pane"] == self.detail), None)
+            if activity:
+                return self.draw_agent_detail(activity)
+            self.detail = None
+        lines = []
+        for i, a in enumerate(self.agents):
+            status = {"working": YELLOW + "◐ working", "blocked": RED + "! blocked", "done": GREEN + "✓ done"}.get(
+                a["status"], DIM + "○ " + str(a["status"] or "")) + RESET
+            place = os.path.basename(a["cwd"] or "") or "?"
+            now = ("  now " + BOLD + agent_activity.current_tool(a) + RESET) if agent_activity.current_tool(a) else ""
+            lines.append("%s %s%s %s%s  %s  %s%s" % (self.pointer(i), BOLD, a["pane"], a["agent"], RESET, status,
+                                                    DIM + place + RESET, now))
+            if a["error"]:
+                lines.append("      " + DIM + a["error"] + RESET)
+                continue
+            tools = sorted(a["tools"].items(), key=lambda kv: -kv[1])
+            summary = " · ".join("%s %d" % (short_tool(n), c) for n, c in tools[:5])
+            ctx = agent_activity.context_label(a)
+            lines.append("      tools %d  %s%s" % (sum(a["tools"].values()), DIM + summary + RESET,
+                                                   ("   " + ctx) if ctx else ""))
+            extra = []
+            if a["skills"]:
+                extra.append("skills " + ", ".join(a["skills"][:3]))
+            if a["md_files"]:
+                extra.append("md " + ", ".join(os.path.basename(p) for p in a["md_files"][:3]))
+            if extra:
+                lines.append("      " + DIM + "   ".join(extra) + RESET)
+        return lines
+
+    def draw_agent_detail(self, a):
+        home = os.path.expanduser("~")
+        tidy = lambda p: p.replace(home, "~", 1)
+        lines = ["%s%s %s%s  %s  %s" % (BOLD, a["pane"], a["agent"], RESET, a["status"], tidy(a["cwd"] or "")),
+                 DIM + "session %s%s  %s" % (a["session"] or "?", " (guessed from the folder)" if a["guessed"] else "",
+                                             a.get("model") or "") + RESET, ""]
+        if a["error"]:
+            return lines + [a["error"]]
+        now = agent_activity.current_tool(a)
+        lines.append("Running now     " + (BOLD + now + RESET if now else DIM + "nothing" + RESET))
+        ctx = agent_activity.context_label(a)
+        if a.get("context") is not None:
+            lines.append("Context         %s  (%s tokens in the last request)" % (ctx, "{:,}".format(a["context"])))
+        tools = sorted(a["tools"].items(), key=lambda kv: -kv[1])
+        lines += ["", BOLD + "Tools" + RESET + DIM + "  %d calls" % sum(a["tools"].values()) + RESET]
+        lines += ["  %-34s %d" % (short_tool(n), c) for n, c in tools[:12]] or ["  " + DIM + "none yet" + RESET]
+        if a["mcp"]:
+            lines += ["", BOLD + "MCP servers" + RESET, "  " + ", ".join("%s %d" % kv for kv in a["mcp"].items())]
+        sections = (("Skills", a["skills"]), ("Markdown files read", [tidy(p) for p in a["md_files"]]),
+                    ("Instruction files", [tidy(p) for p in a["instructions"]]),
+                    ("Memory", [os.path.relpath(p, os.path.dirname(a["transcript"])) + DIM + "  " + since(os.path.getmtime(p)) + RESET
+                                for p in a["memory"][:8]]))
+        for title, items in sections:
+            lines += ["", BOLD + title + RESET] + (["  " + x for x in items] or ["  " + DIM + "none" + RESET])
+        return lines
+
     def draw_settings(self):
         values = claude_accounts.settings()
         lines = [BOLD + "Claude auto-switch" + RESET,
@@ -223,7 +325,13 @@ class Panel:
     def act(self, key, fd):
         rows = self.rows()
         cursor = self.cursor[self.tab]
-        if key in (b"\r", b"\n"):
+        if key in (b"\r", b"\n") and self.tab == 3:
+            if not claude_accounts.settings()["agent_monitor"]:
+                self.message = change_setting("agent_monitor", self.claude) or ""
+                self.agents = None
+            elif rows:
+                self.detail = rows[cursor]["pane"]
+        elif key in (b"\r", b"\n"):
             if self.tab == 2:
                 self.message = change_setting(SETTINGS[cursor][0], self.claude) or ""
             elif rows:
@@ -316,6 +424,13 @@ class Panel:
         self.claude = None
 
 
+def short_tool(name):
+    if name.startswith("mcp__") and name.count("__") >= 2:
+        _, server, tool = name.split("__", 2)
+        return "%s:%s" % (server, tool)
+    return name
+
+
 def change_setting(key, claude_rows):
     """Apply one Settings change; returns a message for the panel, if any."""
     if key == "claude_hook":
@@ -329,6 +444,11 @@ def change_setting(key, claude_rows):
         return ("Added a Stop hook to %s. New Claude sessions use it; running ones pick it up after "
                 "/hooks in each session or a restart." % claude_accounts.claude_settings_path())
     values = claude_accounts.settings()
+    if key == "agent_monitor":
+        values["agent_monitor"] = not values["agent_monitor"]
+        claude_accounts.save_settings(values)
+        return ("Agent monitoring on: see the Agents tab; the sidebar gets $tool, $skill and $ctx."
+                if values["agent_monitor"] else "Agent monitoring off.")
     if key == "auto_switch":
         values["auto_switch"] = not values["auto_switch"]
     elif key == "threshold":
@@ -351,6 +471,9 @@ SETTINGS = (
     ("threshold", "Switch at", lambda v: "%s%% used" % v["threshold"]),
     ("strategy", "Strategy", lambda v: STRATEGY_NAMES[v["strategy"]]),
     ("model", "Also watch model", lambda v: v.get("model") or DIM + "none (5h and week only)" + RESET),
+    ("agent_monitor", "Agent monitoring",
+     lambda v: (GREEN + "on" if v["agent_monitor"] else DIM + "off") + RESET
+     + DIM + "  (tools, skills, files, memory per pane; Agents tab and sidebar)" + RESET),
     ("claude_hook", "Check while Claude works",
      lambda v: (GREEN + "on" if claude_accounts.claude_hook_installed() else DIM + "off") + RESET
      + DIM + "  (Claude Code hook, at most once a minute; covers long turns)" + RESET),
@@ -374,12 +497,18 @@ def run():
                 panel.message = ""
                 panel.load()
                 panel.message = panel.message or keep
+            if panel.tab == 3 and (panel.agents is None or time.time() - panel.agents_at > AGENTS_REFRESH):
+                panel.load_agents()
             rows = panel.rows()
             panel.cursor[panel.tab] = min(panel.cursor[panel.tab], max(0, len(rows) - 1))
             panel.draw()
-            if not select.select([sys.stdin], [], [], REFRESH_EVERY)[0]:
+            wait = AGENTS_REFRESH if panel.tab == 3 else REFRESH_EVERY
+            if not select.select([sys.stdin], [], [], wait)[0]:
                 continue
             key = os.read(fd, 3)
+            if panel.detail and key in (b"\x1b", b"\x7f", b"\x1b[D", b"h"):
+                panel.detail = None
+                continue
             if key in (b"q", b"Q", b"\x1b", b"\x03"):
                 return 0
             panel.message = ""
@@ -387,7 +516,7 @@ def run():
                 panel.tab = (panel.tab + 1) % len(TABS)
             elif key in (b"\x1b[D", b"\x1b[Z", b"h"):
                 panel.tab = (panel.tab - 1) % len(TABS)
-            elif key in (b"1", b"2", b"3"):
+            elif key in (b"1", b"2", b"3", b"4"):
                 panel.tab = int(key) - 1
             elif key in (b"\x1b[A", b"k"):
                 panel.cursor[panel.tab] = max(0, panel.cursor[panel.tab] - 1)
@@ -395,6 +524,7 @@ def run():
                 panel.cursor[panel.tab] = min(len(panel.rows()) - 1, panel.cursor[panel.tab] + 1)
             elif key == b"r":
                 panel.claude = None
+                panel.agents = None
             else:
                 panel.act(key, fd)
     finally:

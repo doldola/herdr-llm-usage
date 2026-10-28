@@ -480,13 +480,42 @@ def cmd_sidebar(args):
             reported[pane] = key
         else:
             failures.append(result.stderr.strip()[:120])
-    (state_dir() / "reported.json").write_text(json.dumps(reported))
     import claude_accounts
+
+    if claude_accounts.settings()["agent_monitor"]:
+        report_tools(agents, reported, failures)
+    (state_dir() / "reported.json").write_text(json.dumps(reported))
 
     problems = ["%s: %s" % (p["name"], p["error"]) for p in data["providers"] if p.get("error")]
     problems += ["report-metadata: " + f for f in failures[:1]]
     claude_accounts.note("sidebar", "; ".join(problems) or "ok, %d agent pane(s)" % len(agents))
     return 0
+
+
+ACTIVITY_TTL_MS = 5 * 60 * 1000  # activity labels must not outlive the hooks that refresh them
+ACTIVITY_TOKENS = ("tool", "skill", "ctx")
+
+
+def report_tools(agents, reported, failures):
+    """$tool, $skill and $ctx on each Claude and Codex pane, from its session transcript."""
+    import agent_activity
+
+    for agent in agents:
+        pane = agent.get("pane_id")
+        if agent.get("agent") not in ("claude", "codex") or not pane:
+            continue
+        values = agent_activity.sidebar_values(agent_activity.pane_activity(agent))
+        key = "activity:" + pane
+        if reported.get(key) == values:
+            continue
+        args = ["pane", "report-metadata", pane, "--source", SOURCE + "-activity", "--ttl-ms", str(ACTIVITY_TTL_MS)]
+        for name in ACTIVITY_TOKENS:
+            args += ["--token", "%s=%s" % (name, values[name])] if values.get(name) else ["--clear-token", name]
+        result = herdr(*args)
+        if result.returncode == 0:
+            reported[key] = values
+        else:
+            failures.append(result.stderr.strip()[:120])
 
 
 def cmd_open(_args):
