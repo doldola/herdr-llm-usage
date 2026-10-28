@@ -19,6 +19,7 @@ import tty
 import unicodedata
 
 import agent_activity
+import agent_setup
 import claude_accounts
 import codex_accounts
 import llm_usage
@@ -285,30 +286,7 @@ class Panel:
         return lines
 
     def draw_agent_detail(self, a):
-        home = os.path.expanduser("~")
-        tidy = lambda p: p.replace(home, "~", 1)
-        lines = ["%s%s %s%s  %s  %s" % (BOLD, a["pane"], a["agent"], RESET, a["status"], tidy(a["cwd"] or "")),
-                 DIM + "session %s%s  %s" % (a["session"] or "?", " (guessed from the folder)" if a["guessed"] else "",
-                                             a.get("model") or "") + RESET, ""]
-        if a["error"]:
-            return lines + [a["error"]]
-        now = agent_activity.current_tool(a)
-        lines.append("Running now     " + (BOLD + now + RESET if now else DIM + "nothing" + RESET))
-        ctx = agent_activity.context_label(a)
-        if a.get("context") is not None:
-            lines.append("Context         %s  (%s tokens in the last request)" % (ctx, "{:,}".format(a["context"])))
-        tools = sorted(a["tools"].items(), key=lambda kv: -kv[1])
-        lines += ["", BOLD + "Tools" + RESET + DIM + "  %d calls" % sum(a["tools"].values()) + RESET]
-        lines += ["  %-34s %d" % (short_tool(n), c) for n, c in tools[:12]] or ["  " + DIM + "none yet" + RESET]
-        if a["mcp"]:
-            lines += ["", BOLD + "MCP servers" + RESET, "  " + ", ".join("%s %d" % kv for kv in a["mcp"].items())]
-        sections = (("Skills", a["skills"]), ("Markdown files read", [tidy(p) for p in a["md_files"]]),
-                    ("Instruction files", [tidy(p) for p in a["instructions"]]),
-                    ("Memory", [os.path.relpath(p, os.path.dirname(a["transcript"])) + DIM + "  " + since(os.path.getmtime(p)) + RESET
-                                for p in a["memory"][:8]]))
-        for title, items in sections:
-            lines += ["", BOLD + title + RESET] + (["  " + x for x in items] or ["  " + DIM + "none" + RESET])
-        return lines
+        return setup_view(a)
 
     def draw_settings(self):
         values = claude_accounts.settings()
@@ -447,6 +425,113 @@ class Panel:
         self.claude = None
 
 
+SETUP_TTL = 30  # seconds a session's setup scan is reused
+_setup_cache = {}
+
+
+def cached_setup(activity):
+    key = (activity.get("agent"), activity.get("cwd"), activity.get("transcript"))
+    hit = _setup_cache.get(key)
+    if hit and time.time() - hit[0] < SETUP_TTL:
+        return hit[1]
+    setup = agent_setup.setup_for(*key)
+    _setup_cache[key] = (time.time(), setup)
+    return setup
+
+
+def tidy(path):
+    home = os.path.expanduser("~")
+    return path.replace(home, "~", 1) if path else path
+
+
+def file_line(entry, base=None):
+    path = os.path.relpath(entry["path"], base) if base else tidy(entry["path"])
+    when = ("  " + since(entry["mtime"])) if entry.get("mtime") else ""
+    return "  %-44s %s" % (path, DIM + "%d lines%s" % (entry["lines"], when) + RESET)
+
+
+def setup_view(a):
+    """What a session is set up with, marked with what it has used so far."""
+    status = {"working": YELLOW + "◐ working", "blocked": RED + "! blocked", "done": GREEN + "✓ done"}.get(
+        a.get("status"), DIM + "○ " + str(a.get("status") or "")) + RESET
+    ctx = agent_activity.context_label(a)
+    lines = ["%s%s %s%s  %s  %s" % (BOLD, a["pane"], a["agent"], RESET, status,
+                                    DIM + " · ".join(x for x in (a.get("model"), ctx) if x) + RESET),
+             DIM + "%s   session %s%s" % (tidy(a.get("cwd") or ""), (a.get("session") or "?")[:13],
+                                          " (guessed)" if a.get("guessed") else "") + RESET]
+    if a.get("error"):
+        lines += ["", YELLOW + a["error"] + RESET]
+    setup = cached_setup(a) or {}
+    used_skills = a.get("skill_uses") or {}
+    used_mcp = a.get("mcp") or {}
+
+    instructions = setup.get("instructions") or []
+    lines += ["", BOLD + "Instructions" + RESET + DIM + "  %d files · %d lines" % (
+        len(instructions) + len(setup.get("rules") or []),
+        sum(e["lines"] for e in instructions + (setup.get("rules") or []))) + RESET]
+    lines += [file_line(e) for e in instructions] or ["  " + DIM + "none" + RESET]
+    lines += [file_line(e) for e in setup.get("rules") or []]
+
+    if a.get("agent") == "claude":
+        memory = setup.get("memory") or []
+        lines += ["", BOLD + "Memory" + RESET + DIM + "  %d files" % len(memory) + RESET]
+        base = os.path.dirname(memory[0]["path"]) if memory else None
+        lines += [file_line(e, base) for e in memory[:8]] or ["  " + DIM + "none for this project" + RESET]
+
+    skills = setup.get("skills") or []
+    names = {k["name"] for k in skills}
+    extra = [n for n in used_skills if n not in names]  # used but not found on disk (e.g. built in)
+    lines += ["", BOLD + "Skills" + RESET + DIM + "  %d available · %d used this session" % (
+        len(skills), len(used_skills)) + RESET]
+    ordered = sorted(skills, key=lambda k: (-used_skills.get(k["name"], 0), k["name"]))
+    for skill in ordered[:16]:
+        count = used_skills.get(skill["name"], 0)
+        mark = GREEN + "●" + RESET if count else DIM + "○" + RESET
+        lines.append("  %s %-22s %s %s%s" % (mark, skill["name"][:22], DIM + "%-16s" % skill["source"][:16] + RESET,
+                                                 DIM + skill["description"][:60] + RESET,
+                                                 ("  " + GREEN + "×%d" % count + RESET) if count else ""))
+    if len(ordered) > 16:
+        lines.append("  " + DIM + "… %d more" % (len(ordered) - 16) + RESET)
+    lines += ["  %s %s  ×%d" % (GREEN + "●" + RESET, n, used_skills[n]) for n in extra]
+
+    mcp = setup.get("mcp") or []
+    lines += ["", BOLD + "MCP servers" + RESET + DIM + "  %d configured · %d used" % (len(mcp), len(used_mcp)) + RESET]
+    cells = []
+    for server in mcp:
+        count = sum(c for name, c in used_mcp.items() if name == server["name"] or server["name"] in name)
+        cells.append((GREEN + "● " if count else DIM + "○ ") + server["name"] + RESET +
+                     DIM + " (%s)" % server["scope"] + RESET + (" ×%d" % count if count else ""))
+    cells += [GREEN + "● " + RESET + name + " ×%d" % c for name, c in used_mcp.items()
+              if not any(name == s["name"] or s["name"] in name for s in mcp)]
+    lines += ["  " + "   ".join(cells)] if cells else ["  " + DIM + "none" + RESET]
+
+    others = []
+    for label, key in (("Subagents", "agents"), ("Commands", "commands"), ("Plugins", "plugins")):
+        items = setup.get(key) or []
+        if items:
+            others.append("%s%s%s %s" % (BOLD, label, RESET, DIM + ", ".join(items[:8]) +
+                                          (" …" if len(items) > 8 else "") + RESET))
+    hooks = setup.get("hooks") or {}
+    if hooks:
+        others.append(BOLD + "Hooks" + RESET + " " + DIM + " · ".join("%s %d" % kv for kv in sorted(hooks.items())) + RESET)
+    if others:
+        lines += [""] + others
+    settings = {k: v for k, v in (setup.get("settings") or {}).items() if v not in (None, "", 0)}
+    if settings:
+        lines += ["", BOLD + "Settings" + RESET + " " + DIM + " · ".join("%s %s" % kv for kv in settings.items()) + RESET]
+
+    tools = sorted((a.get("tools") or {}).items(), key=lambda kv: -kv[1])
+    now = agent_activity.current_tool(a)
+    lines += ["", BOLD + "This session" + RESET + DIM + "  %d tool calls" % sum(a.get("tools", {}).values()) + RESET]
+    if now:
+        lines.append("  running  " + BOLD + now + RESET)
+    lines.append("  tools    " + (DIM + " · ".join("%s %d" % (short_tool(n), c) for n, c in tools[:8]) + RESET
+                                  if tools else DIM + "none yet" + RESET))
+    if a.get("md_files"):
+        lines.append("  md read  " + DIM + ", ".join(os.path.basename(p) for p in a["md_files"][:6]) + RESET)
+    return lines
+
+
 def short_tool(name):
     if name.startswith("mcp__") and name.count("__") >= 2:
         _, server, tool = name.split("__", 2)
@@ -581,50 +666,130 @@ def usage_header(usage):
     return lines
 
 
+FOLLOW_POLL = 1.0  # seconds between checks of which agent is selected
+MONITOR_RATIO = 0.65  # share of the width the agent keeps when the monitor joins its tab
+
+
+def herdr_json(*args):
+    result = llm_usage.herdr(*args)
+    try:
+        return json.loads(result.stdout).get("result") or {}
+    except ValueError:
+        return {}
+
+
+class Monitor:
+    """Shows the agent selected in herdr, and follows it to other tabs."""
+
+    def __init__(self):
+        self.pane = os.environ.get("HERDR_PANE_ID")  # this monitor's own pane
+        self.shown = None  # herdr agent entry being shown
+        self.activity = None
+        self.usage = None
+        self.scroll = 0
+        self.follow = True
+        self.message = ""
+        self.panel = Panel()  # for its detail drawing and the sidebar push
+        self.sidebar_at = 0.0
+        self.moved = (None, 0.0)  # tab this monitor last moved to, and when
+
+    def poll(self):
+        agents = herdr_json("agent", "list").get("agents") or []
+        watched = [a for a in agents if a.get("agent") in ("claude", "codex")]
+        focused = next((a for a in watched if a.get("focused")), None)
+        previous = (self.shown or {}).get("pane_id")
+        if focused:
+            self.shown = focused
+        elif self.shown:  # focus is on this monitor or a plain pane: keep showing the last agent
+            self.shown = next((a for a in watched if a.get("pane_id") == previous), None)
+        if not self.shown and watched:
+            self.shown = watched[0]
+        if self.shown and self.shown.get("pane_id") != previous:
+            self.scroll = 0
+        if self.shown and focused and self.follow:
+            self.join_tab(focused)
+        self.activity = agent_activity.pane_activity(self.shown) if self.shown else None
+        if time.time() - self.sidebar_at > MONITOR_REFRESH:
+            self.sidebar_at = time.time()
+            self.usage = llm_usage.cached(llm_usage.CACHE_TTL)
+            self.panel.agents_at = 0
+            self.panel.load_agents()  # keeps the sidebar tokens current too
+
+    def join_tab(self, agent):
+        """Move this monitor next to the selected agent when that agent is in another tab."""
+        if not self.pane:
+            return
+        mine = (herdr_json("pane", "get", self.pane).get("pane") or {}).get("tab_id")
+        if not mine or mine == agent.get("tab_id"):
+            return
+        if self.moved[0] == agent.get("tab_id") and time.time() - self.moved[1] < 10:
+            return  # a move is in flight or was refused; do not repeat it every second
+        self.moved = (agent.get("tab_id"), time.time())
+        moved = herdr_json("pane", "move", self.pane, "--tab", agent["tab_id"], "--split", "right",
+                           "--target-pane", agent["pane_id"], "--ratio", str(MONITOR_RATIO), "--no-focus")
+        new_id = ((moved.get("move_result") or {}).get("pane") or {}).get("pane_id")
+        if new_id:
+            self.pane = new_id
+        elif not moved:
+            self.message = DIM + "could not follow to the agent's tab; press f to stop following" + RESET
+
+    def lines(self):
+        if not claude_accounts.settings()["agent_monitor"]:
+            return ["Agent monitoring is off.", "",
+                    "Press enter to turn it on. This pane then shows the agent you select in",
+                    "herdr: running tool, tool counts, skills, markdown files, instructions,",
+                    "memory and context, read from the session transcript on this machine."]
+        if not self.shown:
+            return ["No Claude or Codex agents."]
+        a = self.shown
+        view = setup_view(self.activity) if self.activity else [a.get("pane_id") or "?"]
+        provider = "Claude" if a.get("agent") == "claude" else "Codex"
+        usage = [line for line in usage_header(self.usage) if line.startswith(BOLD + provider)]
+        return view[:1] + usage + view[1:]
+
+
 def run_monitor():
-    """A pane that stays open beside your work and keeps the Agents view current."""
+    """A pane beside your work showing the agent selected in herdr's sidebar."""
     fd = sys.stdin.fileno()
     saved = termios.tcgetattr(fd)
-    panel = Panel()
-    panel.tab = 3
-    usage = None
+    monitor = Monitor()
+    next_poll = 0.0
     try:
         tty.setcbreak(fd)
         sys.stdout.write("\033[?25l")
         while True:
-            if panel.agents is None or time.time() - panel.agents_at >= MONITOR_REFRESH:
-                panel.load_agents()
+            if time.time() >= next_poll:
                 try:
-                    usage = llm_usage.cached(llm_usage.CACHE_TTL)
-                except Exception as exc:  # keep the pane alive; show why the header is empty
-                    panel.message = RED + "usage: %s" % exc + RESET
+                    monitor.poll()
+                except Exception as exc:  # keep the pane alive and say why
+                    monitor.message = RED + "%s: %s" % (type(exc).__name__, exc) + RESET
+                next_poll = time.time() + FOLLOW_POLL
             size = shutil.get_terminal_size()
-            rows = panel.rows()
-            panel.cursor[3] = min(panel.cursor[3], max(0, len(rows) - 1))
-            out = [BOLD + "Agents" + RESET + DIM + "   " + time.strftime("%H:%M:%S") + RESET]
-            out += usage_header(usage) + [""] + panel.draw_agents() + ["", panel.message]
-            hint = "esc back · q close" if panel.detail else "↑↓ select · enter details · r refresh · q close"
-            out = out[:max(1, size.lines - 1)]
-            out.append(DIM + hint + RESET)
+            body = monitor.lines()
+            room = max(1, size.lines - 3)
+            monitor.scroll = max(0, min(monitor.scroll, len(body) - room))
+            out = body[monitor.scroll:monitor.scroll + room] + [monitor.message]
+            follow = "f follow tabs: " + ("on" if monitor.follow else "off")
+            out.append(DIM + "j/k scroll · %s · r refresh · q close" % follow + RESET)
             sys.stdout.write("\033[H\033[2J" + "\r\n".join(fit(line, size.columns) for line in out))
             sys.stdout.flush()
-            if not select.select([sys.stdin], [], [], MONITOR_REFRESH)[0]:
+            if not select.select([sys.stdin], [], [], FOLLOW_POLL)[0]:
                 continue
             key = os.read(fd, 3)
-            panel.message = ""
-            if panel.detail and key in (b"\x1b", b"\x7f", b"\x1b[D", b"h"):
-                panel.detail = None
-            elif key in (b"q", b"Q", b"\x03"):
+            monitor.message = ""
+            if key in (b"q", b"Q", b"\x03"):
                 return 0
-            elif key in (b"\x1b[A", b"k"):
-                panel.cursor[3] = max(0, panel.cursor[3] - 1)
-            elif key in (b"\x1b[B", b"j"):
-                panel.cursor[3] = min(len(panel.rows()) - 1, panel.cursor[3] + 1)
+            if key in (b"j", b"\x1b[B"):
+                monitor.scroll += 1
+            elif key in (b"k", b"\x1b[A"):
+                monitor.scroll = max(0, monitor.scroll - 1)
+            elif key == b"f":
+                monitor.follow = not monitor.follow
             elif key == b"r":
-                panel.agents = None
-            else:
-                panel.act(key, fd)
-                panel.agents_at = 0  # show the change at once
+                next_poll = 0
+            elif key in (b"\r", b"\n") and not claude_accounts.settings()["agent_monitor"]:
+                monitor.message = change_setting("agent_monitor", None) or ""
+                next_poll = 0
     finally:
         sys.stdout.write("\033[?25h")
         sys.stdout.flush()

@@ -16,7 +16,7 @@ import re
 import time
 from pathlib import Path
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 MAX_RECENT = 12  # markdown files and skills kept per session, newest first
 MD_PATH = re.compile(r"""(?:^|[\s'"=(])((?:~|\.{0,2}/)?[\w@.~/+-]*\.md)\b""")
 
@@ -85,8 +85,13 @@ def _remember_codex_path(session_id, path):
 
 
 def empty_stats():
-    return {"tools": {}, "skills": [], "md_files": [], "pending": {}, "context": None,
+    return {"tools": {}, "skills": [], "skill_uses": {}, "md_files": [], "pending": {}, "context": None,
             "context_window": None, "last_tool": None, "last_at": None, "model": None}
+
+
+def _use_skill(stats, name):
+    _push_recent(stats["skills"], name)
+    stats["skill_uses"][name] = stats["skill_uses"].get(name, 0) + 1
 
 
 def _push_recent(items, value):
@@ -131,12 +136,12 @@ def apply_claude(stats, entry):
             if name == "Skill":
                 skill = data.get("skill") or data.get("command") or data.get("name")
                 if skill:
-                    _push_recent(stats["skills"], str(skill))
+                    _use_skill(stats, str(skill))
             path = data.get("file_path") or data.get("path") or ""
             if isinstance(path, str) and path.endswith(".md"):
                 _push_recent(stats["md_files"], path)
                 if path.endswith("SKILL.md"):
-                    _push_recent(stats["skills"], Path(path).parent.name)
+                    _use_skill(stats, Path(path).parent.name)
         elif part.get("type") == "tool_result":
             stats["pending"].pop(part.get("tool_use_id"), None)
     stats["last_at"] = entry.get("timestamp") or stats["last_at"]
@@ -157,7 +162,7 @@ def apply_codex(stats, entry):
             for path in _md_in(text if isinstance(text, str) else json.dumps(text)):
                 _push_recent(stats["md_files"], path)
                 if path.endswith("SKILL.md"):
-                    _push_recent(stats["skills"], Path(path).parent.name)
+                    _use_skill(stats, Path(path).parent.name)
         elif item in ("function_call_output", "custom_tool_call_output", "tool_search_output"):
             stats["pending"].pop(payload.get("call_id"), None)
     elif kind == "event_msg" and payload.get("type") == "token_count":

@@ -137,18 +137,35 @@ folder, not an observation that they were read.
 
 ### Monitor pane
 
-For a view that stays open beside your work instead of a popup:
+A pane beside your work that shows the agent you select in herdr's sidebar:
 
 ```bash
 herdr plugin action invoke llm-usage.monitor
 ```
 
-It opens to the right of the focused pane (move or resize it like any pane)
-and refreshes every 3 seconds: usage for the signed-in Claude and Codex
-accounts at the top, then every agent pane with its running tool, context,
-tool counts, skills and markdown files. `↑` `↓` select, `enter` shows a pane
-in full, `esc` goes back, `q` closes it. While it is open it also keeps the
-sidebar tokens below current.
+Select an agent in the sidebar and, within a second, the monitor shows that
+session's setup and how it is used:
+
+- **Instructions**: the `CLAUDE.md` chain and `.claude/rules` (or `AGENTS.md`
+  for Codex), with line counts and when they last changed
+- **Memory**: Claude's memory files for the project
+- **Skills**: every skill available to the session (user, project and enabled
+  plugins), with the ones used this session marked and counted
+- **MCP servers**: configured servers by scope (user, local, project, Codex
+  config), marked when used
+- **Subagents, commands, plugins, hooks** and **settings** (permission mode and
+  rule counts; Codex model, reasoning effort, approval and sandbox)
+- **This session**: the running tool, tool counts, markdown files read, model
+  and context
+
+When the selected agent is in another tab, the monitor moves into that tab,
+to its right (`f` turns this off). `j` `k` scroll, `r` refreshes, `q`
+closes. Selecting the monitor itself keeps the last agent on screen. It also
+keeps the sidebar tokens below current while it is open.
+
+Setup comes from the files each CLI loads for the session's folder, by their
+documented locations; it describes what is configured, and the marks show what
+the transcript says was used.
 
 While monitoring is on, the sidebar also gets:
 

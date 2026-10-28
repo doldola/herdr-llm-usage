@@ -1,6 +1,6 @@
 id = "llm-usage"
 name = "LLM Usage"
-version = "0.8.0"
+version = "0.9.0"
 min_herdr_version = "0.7.5"
 description = "LLM accounts, usage and agent activity in one panel: Claude and Codex usage, account switching, auto-switch, tools and skills per pane"
 platforms = ["linux", "macos"]
@@ -13,7 +13,7 @@ command = ["python3", "llm_usage.py", "open"]
 
 [[actions]]
 id = "monitor"
-title = "Agents monitor (pane beside your work)"
+title = "Agent monitor: setup and use of the selected agent"
 contexts = ["workspace"]
 command = ["python3", "llm_usage.py", "open-monitor"]
 
