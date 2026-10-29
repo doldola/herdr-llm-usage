@@ -408,8 +408,19 @@ Claude Code는 프로젝트 메모리를 `~/.claude/projects/<프로젝트>/memo
 ### 스킬 관리: `s`
 
 `s`(또는 Skills 제목 줄에서 `enter`)를 누르면 선택한 에이전트가 쓸 수 있는 모든
-스킬이 꺼 둔 것까지 포함해 나옵니다. Claude는 최근 30일 동안 그 프로젝트의 모든
-세션에서 쓴 횟수를, Codex는 현재 세션에서 쓴 횟수를 셉니다. `tab` /
+스킬이 꺼 둔 것까지 포함해, 많이 쓴 순서로 나옵니다. 스킬마다 불러온 횟수가
+보입니다.
+
+```
+› ● code-review  user · 42 lines  this session ×2  30d ×14 in 6 sessions, last 3h ago
+  ● docx         user · 88 lines  30d ×3 in 2 sessions, last 9d ago
+  ○ pdf          user · 61 lines
+```
+
+`this session`은 선택한 세션에서 불러온 횟수, `30d`는 최근 30일 동안 그 프로젝트
+폴더의 모든 세션(최근 300개까지)에서 불러온 횟수입니다. 몇 개의 세션에서
+불러왔는지, 마지막으로 언제 불러왔는지도 함께 나옵니다. Codex는 현재 세션만
+셉니다. 모니터 화면에서 스킬 옆의 `×N`은 이 세션의 횟수입니다. `tab` /
 `shift+tab`(또는 `→`)으로 필터를 바꿉니다.
 
 | 필터 | 찾는 것 | 왜 문제인지 |
