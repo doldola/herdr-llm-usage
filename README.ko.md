@@ -32,6 +32,7 @@
 - [이런 분께 맞습니다](#이런-분께-맞습니다)
 - [빠른 시작](#빠른-시작)
 - [설치](#설치)
+  - [Claude 계정 준비](#claude-계정-준비)
 - [패널: `prefix+u`](#패널-prefixu)
 - [계정 추가와 전환](#계정-추가와-전환)
 - [Claude 자동 전환](#claude-자동-전환)
@@ -62,7 +63,8 @@ herdr에서 Claude Code나 Codex를 쓰고 있고, 아래 중 하나라도 해�
 ## 빠른 시작
 
 1. 플러그인을 설치하고 단축키 두 개를 추가한 뒤([설치](#설치) 참고), herdr에서
-   **메뉴 → reload config**를 누릅니다.
+   **메뉴 → reload config**를 누릅니다. Claude 계정을 여러 개 쓰려면
+   claude-swap도 설치합니다([Claude 계정 준비](#claude-계정-준비)).
 2. `prefix+u`를 누릅니다. **Claude** 탭과 **Codex** 탭에 각 CLI에 로그인된
    계정과 사용량이 보입니다.
 3. 여러 계정을 쓰려면: `s`로 현재 로그인을 저장하고, CLI에서 다음 계정으로
@@ -119,6 +121,46 @@ description = "Agent monitor"
 사용량은 구독 로그인(Claude Pro/Max/Team, Codex를 쓰는 ChatGPT 플랜)에서만
 보입니다. API 키 로그인에는 5시간·주간 한도가 없으므로, 설정 탭의 다른 로그인
 목록에만 표시됩니다.
+
+### Claude 계정 준비
+
+로그인된 계정 하나의 사용량만 보려면 구독으로 로그인한 Claude Code만 있으면
+됩니다. 여러 계정 저장, 전환, 자동 전환에는 저장한 로그인을 보관하는
+claude-swap(`cswap`)이 추가로 필요합니다.
+
+1. **Claude Code**: 설치하고 `/login`으로 구독 계정에 로그인합니다(API 키가 아님).
+2. **uv**(또는 pipx): claude-swap 설치용입니다.
+
+   ```bash
+   brew install uv                                   # macOS
+   curl -LsSf https://astral.sh/uv/install.sh | sh   # macOS 또는 Linux
+   ```
+
+3. **claude-swap**: Python 3.12 이상이 필요합니다. 컴퓨터의 Python이 더
+   낮아도 uv가 알아서 받아 쓰므로 Python을 바꿀 필요는 없습니다.
+
+   ```bash
+   uv tool install claude-swap      # 또는: pipx install claude-swap
+   cswap --version                  # 실행되는지 확인
+   ```
+
+   플러그인은 herdr의 `PATH`와 `~/.local/bin`, `~/.cargo/bin`,
+   `/opt/homebrew/bin`, `/usr/local/bin`에서 `cswap`을 찾습니다. uv와 pipx가
+   설치하는 위치입니다. 설치한 뒤 `prefix+u`를 다시 여세요.
+4. **계정마다 저장**: Claude 탭에서 `s`를 누르면(`cswap add` 실행) 로그인된
+   계정이 저장됩니다. Claude Code에서 다음 계정으로 `/login`한 뒤 다시 `s`를
+   누릅니다. 저장된 목록은 `cswap list`로 볼 수 있습니다.
+
+claude-swap 업데이트는 `uv tool upgrade claude-swap`(또는
+`pipx upgrade claude-swap`)으로 합니다.
+
+계정에 **"re-login needed"**가 뜨면, 저장해 둔 로그인 연장 토큰이 더는 통하지
+않는다는 뜻입니다(오래 안 썼거나, 다른 곳에서 로그아웃했거나, 비밀번호를 바꾼
+경우). 그래서 claude-swap도 플러그인도 갱신할 수 없습니다. Claude Code에서 **그
+계정으로** `/login`한 뒤 Claude 탭에서 `s`를 누르세요. 같은 이메일의 계정은 새로
+추가되지 않고 그 자리에서 갱신됩니다. `/login`하면 실행 중인 모든 Claude 세션이
+그 계정으로 넘어가므로, 원래 쓰던 계정이 있었다면 그 뒤에 `enter`로 되돌리세요.
+더 필요 없는 계정이면 `x`로 목록에서 빼도 됩니다.
 
 ## 패널: `prefix+u`
 
@@ -476,6 +518,7 @@ rows = [
 | 모니터나 Agents 탭에 "no transcript", "no session id" | `herdr integration install claude` / `codex` 후 새 세션 시작 |
 | 모니터의 세션 옆에 "(guessed)" | herdr가 pane의 세션 ID를 모르기 때문에, 그 폴더의 가장 최근 트랜스크립트를 보여주는 중. 연동 설치 |
 | Claude 전환을 쓸 수 없음 | claude-swap 설치. `cswap list`에 계정이 보여야 함 |
+| 계정에 "re-login needed" | Claude Code에서 그 계정으로 `/login` 후 Claude 탭에서 `s`([자세히](#claude-계정-준비)) |
 | Codex pane이 다시 이어지지 않음 | 알림에 이유가 나옴. pane은 셸에서 Codex를 실행한 상태여야 함 |
 | 끝난 워크플로우가 계속 `◐` | 완료 알림이 플러그인이 모르는 형식이었음. 이슈로 알려주세요 |
 

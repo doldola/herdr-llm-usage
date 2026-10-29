@@ -31,6 +31,7 @@ running sessions, and what each agent session is set up with and actually uses.
 - [Who it is for](#who-it-is-for)
 - [Quick start](#quick-start)
 - [Install](#install)
+  - [Setting up Claude accounts](#setting-up-claude-accounts)
 - [The panel: `prefix+u`](#the-panel-prefixu)
 - [Accounts and switching](#accounts-and-switching)
 - [Claude auto-switch](#claude-auto-switch)
@@ -61,7 +62,8 @@ claude-swap for Claude; the monitor needs herdr's agent integrations.
 ## Quick start
 
 1. Install the plugin and add the two keys (see [Install](#install)), then
-   **menu → reload config** in herdr.
+   **menu → reload config** in herdr. For several Claude accounts, install
+   claude-swap too ([Setting up Claude accounts](#setting-up-claude-accounts)).
 2. Press `prefix+u`. The **Claude** and **Codex** tabs show the account each
    CLI is signed in to, with its usage.
 3. To keep several accounts: press `s` to save the current login, sign in to
@@ -115,6 +117,47 @@ Without a key, the same actions run from a shell inside herdr:
 Usage is shown for subscription logins (Claude Pro/Max/Team, ChatGPT plans
 with Codex). API-key logins have no 5-hour or weekly window; the Settings tab
 lists them under other logins.
+
+### Setting up Claude accounts
+
+Seeing the signed-in account's usage needs only Claude Code, signed in with a
+subscription. Saving several accounts, switching and auto-switch also need
+claude-swap (`cswap`), which keeps the saved logins:
+
+1. **Claude Code**, installed and signed in with `/login` (not an API key).
+2. **uv** (or pipx), to install claude-swap:
+
+   ```bash
+   brew install uv                                   # macOS
+   curl -LsSf https://astral.sh/uv/install.sh | sh   # macOS or Linux
+   ```
+
+3. **claude-swap**. It needs Python 3.12 or later; uv fetches one if yours is
+   older, so you do not have to change your Python:
+
+   ```bash
+   uv tool install claude-swap      # or: pipx install claude-swap
+   cswap --version                  # check it runs
+   ```
+
+   The plugin looks for `cswap` on herdr's `PATH` and in `~/.local/bin`,
+   `~/.cargo/bin`, `/opt/homebrew/bin` and `/usr/local/bin`, where uv and pipx
+   put it. Open `prefix+u` again after installing.
+4. **Save each account.** On the Claude tab press `s` (it runs `cswap add`) to
+   save the signed-in account. Then `/login` in Claude Code with the next
+   account and press `s` again. `cswap list` shows what is saved.
+
+Update claude-swap with `uv tool upgrade claude-swap` (or
+`pipx upgrade claude-swap`).
+
+**"re-login needed"** on an account means its saved refresh token no longer
+works (it was unused for a long time, signed out elsewhere, or its password
+changed), so neither claude-swap nor the plugin can renew it. Run `/login` in
+Claude Code with that same account and press `s` on the Claude tab: an account
+with the same email is updated in place, not added twice. `/login` moves every
+running Claude session to that account, so switch back with `enter` afterwards
+if you were using another one. Or remove the account with `x` if you no longer
+need it.
 
 ## The panel: `prefix+u`
 
@@ -477,6 +520,7 @@ plugin's hooks in Claude Code's `settings.json`.
 | Monitor or Agents tab says "no transcript" or "no session id" | `herdr integration install claude` / `codex`, then start a new session |
 | Monitor shows "(guessed)" next to the session | herdr has no session id for the pane, so the newest transcript in the folder is shown; install the integration |
 | Claude switching is unavailable | install claude-swap; `cswap list` should show your accounts |
+| An account says "re-login needed" | `/login` with that account in Claude Code, then `s` on the Claude tab ([details](#setting-up-claude-accounts)) |
 | Codex panes did not resume | the notification lists why; panes must run Codex from a shell |
 | A workflow stays `◐` after it finished | its completion notice had a form the plugin does not recognize; please open an issue |
 
