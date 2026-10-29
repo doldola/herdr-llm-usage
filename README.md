@@ -1,5 +1,7 @@
 # herdr-llm-usage
 
+**English** · [한국어](README.ko.md)
+
 A [herdr](https://herdr.dev) plugin for the LLM side of your agents: how much
 subscription usage every account has left, switching accounts without losing
 running sessions, and what each agent session is set up with and actually uses.
