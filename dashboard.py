@@ -39,6 +39,28 @@ GREEN, RED, YELLOW, BLUE = "\033[32m", "\033[31m", "\033[33m", "\033[34m"
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 
+_last_frame = None  # what paint() last drew, so an unchanged screen is not redrawn
+
+
+def paint(lines, width):
+    """Draw a full screen in place: overwrite each line and clear what is left, without
+    blanking the screen first, so a redraw does not flicker. An unchanged screen is skipped."""
+    global _last_frame
+    frame = "\033[H" + "\r\n".join(fit(line, width) + "\033[K" for line in lines) + "\033[J"
+    if frame == _last_frame:
+        return
+    _last_frame = frame
+    # Synchronized output: terminals that support it show the frame at once; others ignore it.
+    sys.stdout.write("\033[?2026h" + frame + "\033[?2026l")
+    sys.stdout.flush()
+
+
+def repaint():
+    """Make the next paint() draw even if the screen looks unchanged (something else drew over it)."""
+    global _last_frame
+    _last_frame = None
+
+
 def fit(line, width):
     """Cut a line to `width` visible columns, keeping its colors (wide characters count as two)."""
     out, used, i = [], 0, 0
@@ -244,8 +266,7 @@ class Panel:
                 "←→ tabs · ↑↓ select · enter details · r refresh · q close"),
         }[self.tab]
         out.append(DIM + keys[:width] + RESET)
-        sys.stdout.write("\033[H\033[2J" + "\r\n".join(fit(line, width) for line in out))
-        sys.stdout.flush()
+        paint(out, width)
 
     def pointer(self, i):
         return BOLD + "›" + RESET if i == self.cursor[self.tab] else " "
@@ -481,6 +502,7 @@ class Panel:
             # cswap asks for confirmation itself, so hand it the terminal.
             saved = termios.tcgetattr(fd)
             termios.tcsetattr(fd, termios.TCSADRAIN, ORIGINAL_TTY)
+            repaint()
             sys.stdout.write("\033[H\033[2J\033[?25h")
             sys.stdout.flush()
             subprocess.call([claude_accounts.cswap_path(), "remove", str(row["number"])])
@@ -488,6 +510,7 @@ class Panel:
             termios.tcsetattr(fd, termios.TCSADRAIN, saved)
             sys.stdout.write("\033[?25l")
         else:
+            repaint()
             sys.stdout.write("\r\n\r\nRemove %s? [y/N] " % row["email"])
             sys.stdout.flush()
             if os.read(fd, 1) in (b"y", b"Y"):
@@ -1257,8 +1280,7 @@ def _run_monitor():
                 hint = "↑↓ file · enter read%s · s skills · m memory · f follow %s · q close" % (
                     " · c fold" if monitor.expanded else "", "on" if monitor.follow else "off")
             out.append(DIM + hint + RESET)
-            sys.stdout.write("\033[H\033[2J" + "\r\n".join(fit(line, size.columns) for line in out))
-            sys.stdout.flush()
+            paint(out, size.columns)
             if not select.select([sys.stdin], [], [], FOLLOW_POLL)[0]:
                 continue
             key = read_key(fd)
