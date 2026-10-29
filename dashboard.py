@@ -1091,7 +1091,7 @@ def skill_rows(monitor, width):
     counts = [sum(1 for e in report["entries"] if f(e)) for _, f in skill_tools.FILTERS]
     monitor.skills_shown = [e for e in report["entries"] if keep(e)]
     monitor.skills_cursor = max(0, min(monitor.skills_cursor, len(monitor.skills_shown) - 1))
-    scope = ("use counted over %d session(s) of this project in the last %d days; most used first"
+    scope = ("use counted over %d session(s) of this project in the last %d days"
              % (report["sessions"], skill_tools.UNUSED_DAYS)) if report["agent"] == "claude" else "use counted in this session"
     rows = wrap(BOLD + "Skills" + RESET + DIM + "  for %s · %s" % (tidy(monitor.activity.get("cwd") or ""), scope) + RESET, width)
     tabs = "  ".join((BOLD + "[%s %d]" + RESET if i == monitor.skills_filter else DIM + " %s %d " + RESET) % (name, n)
@@ -1112,13 +1112,8 @@ def skill_rows(monitor, width):
             flags.append(RED + "same name elsewhere" + RESET)
         if entry["enabled"] and not entry["description"]:
             flags.append(YELLOW + "no description" + RESET)
-        if entry["session_uses"]:
-            flags.append(GREEN + "this session ×%d" % entry["session_uses"] + RESET)
-        if entry["uses"] and report["agent"] == "claude":
-            last = _epoch(entry.get("last"))
-            flags.append(GREEN + "%dd ×%d" % (skill_tools.UNUSED_DAYS, entry["uses"]) + RESET + DIM +
-                         " in %d session%s%s" % (entry["sessions"], "" if entry["sessions"] == 1 else "s",
-                                                 (", last " + since(last)) if last else "") + RESET)
+        if entry["uses"] or entry["session_uses"]:
+            flags.append(GREEN + "×%d" % max(entry["uses"], entry["session_uses"]) + RESET)
         pointer = BOLD + "›" + RESET if i == monitor.skills_cursor else " "
         if i == monitor.skills_cursor:
             chosen_row = len(rows)

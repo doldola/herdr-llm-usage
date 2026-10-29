@@ -410,20 +410,8 @@ read the index when they start, so changes apply to new sessions.
 ### Managing skills: `s`
 
 `s` (or `enter` on the Skills heading) lists every skill the selected agent can
-use, including ones you disabled, most used first. Each skill shows how often
-it was loaded:
-
-```
-› ● code-review  user · 42 lines  this session ×2  30d ×14 in 6 sessions, last 3h ago
-  ● docx         user · 88 lines  30d ×3 in 2 sessions, last 9d ago
-  ○ pdf          user · 61 lines
-```
-
-`this session` counts the selected session; `30d` counts every session of the
-project's folder in the last 30 days (up to the newest 300), with how many
-sessions loaded it and when it was last loaded. For Codex only the current
-session is counted. The monitor's own `×N` next to a skill is this session's
-count.
+use, including ones you disabled. For Claude, use is counted over the
+project's sessions of the last 30 days; for Codex, over the current session.
 `tab` / `shift+tab` (or `→`) switch filters:
 
 | Filter | Finds | Why it matters |

@@ -30,33 +30,24 @@ def disabled_dir(skills_dir):
 
 
 def project_skill_uses(agent, transcript, days=UNUSED_DAYS):
-    """Skill use over the project's recent Claude sessions (this session's for Codex).
-
-    Returns ({name: {"uses": n, "sessions": n, "last": timestamp}}, sessions scanned).
-    """
+    """Skill uses summed over the project's recent Claude sessions (this session's for Codex)."""
     if not transcript:
         return {}, 0
     transcript = Path(transcript)
-    if agent == "claude":
-        since = time.time() - days * 86400
-        files = sorted((p for p in transcript.parent.glob("*.jsonl") if p.stat().st_mtime >= since),
-                       key=lambda p: -p.stat().st_mtime)[:MAX_TRANSCRIPTS]
-    else:
-        files = [transcript]
+    if agent != "claude":
+        stats = agent_activity.read_session(agent, transcript)
+        return dict(stats.get("skill_uses") or {}), 1
+    since = time.time() - days * 86400
+    files = sorted((p for p in transcript.parent.glob("*.jsonl") if p.stat().st_mtime >= since),
+                   key=lambda p: -p.stat().st_mtime)[:MAX_TRANSCRIPTS]
     uses = {}
     for path in files:
         try:
-            stats = agent_activity.read_session(agent, path)
+            stats = agent_activity.read_session("claude", path)
         except (OSError, ValueError):
             continue
-        skill_at = stats.get("skill_at") or {}
         for name, count in (stats.get("skill_uses") or {}).items():
-            entry = uses.setdefault(name, {"uses": 0, "sessions": 0, "last": None})
-            entry["uses"] += count
-            entry["sessions"] += 1
-            at = skill_at.get(name) or stats.get("last_at")
-            if at and (entry["last"] is None or str(at) > str(entry["last"])):
-                entry["last"] = at
+            uses[name] = uses.get(name, 0) + count
     return uses, len(files)
 
 
@@ -95,10 +86,7 @@ def scan(activity):
         names.setdefault(entry["name"], []).append(entry)
     for entry in entries:
         aliases = {entry["name"], Path(entry["path"]).parent.name}  # called by name or by folder
-        found = [uses[n] for n in aliases if n in uses]
-        entry["uses"] = sum(f["uses"] for f in found)
-        entry["sessions"] = sum(f["sessions"] for f in found)
-        entry["last"] = max((f["last"] for f in found if f["last"]), default=None, key=str)
+        entry["uses"] = sum(uses.get(n, 0) for n in aliases)
         entry["session_uses"] = sum(session_uses.get(n, 0) for n in aliases)
         entry["duplicate"] = len([e for e in names[entry["name"]] if e["enabled"]]) > 1 and entry["enabled"]
         entry["lines"] = sum(1 for _ in open(entry["path"], "rb")) if os.path.isfile(entry["path"]) else 0
